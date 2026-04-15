@@ -714,6 +714,204 @@ function EmailModal({ onClose, subreddits }: EmailModalProps) {
   );
 }
 
+// ─── Report generator ─────────────────────────────────────────────────────────
+
+function generateReportHTML(
+  painPoints: PainPoint[],
+  subreddits: Subreddit[],
+  totalPosts: number
+): string {
+  const date = new Date().toLocaleDateString("en-GB", {
+    day: "numeric", month: "long", year: "numeric",
+  });
+  const time = new Date().toLocaleTimeString("en-GB", {
+    hour: "2-digit", minute: "2-digit",
+  });
+  const maxCount = painPoints[0]?.count ?? 1;
+  const COLORS = ["#7c3aed", "#06b6d4", "#10b981", "#f59e0b", "#ef4444"];
+
+  const painRows = painPoints.map((p, i) => {
+    const pct = Math.round((p.count / maxCount) * 100);
+    const samplePosts = p.posts.slice(0, 3);
+    const postsHtml = samplePosts.map(post =>
+      `<li class="sample-post">"${escapeHtml(post)}"</li>`
+    ).join("");
+
+    return `
+      <div class="pain-block">
+        <div class="pain-header">
+          <span class="pain-rank" style="background:${COLORS[i]}22;color:${COLORS[i]}">#${i + 1}</span>
+          <span class="pain-phrase">${escapeHtml(p.phrase)}</span>
+          <span class="pain-count">${p.count} mention${p.count !== 1 ? "s" : ""}</span>
+        </div>
+        <div class="bar-track">
+          <div class="bar-fill" style="width:${pct}%;background:${COLORS[i]}"></div>
+        </div>
+        ${samplePosts.length > 0 ? `
+        <div class="sample-label">Example posts:</div>
+        <ul class="sample-list">${postsHtml}</ul>
+        ` : ""}
+      </div>`;
+  }).join("");
+
+  const subredditChips = subreddits.map(s =>
+    `<span class="chip">${escapeHtml(s.title)}</span>`
+  ).join("");
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>ProblemPulse Report — ${date}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet"/>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Inter',sans-serif;background:#0a0a0f;color:#f0f0f8;padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .page{max-width:780px;margin:0 auto;padding:48px 40px}
+  /* Header */
+  .header{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:40px;padding-bottom:28px;border-bottom:1px solid #2a2a35}
+  .logo{display:flex;align-items:center;gap:10px}
+  .logo-dot{width:10px;height:10px;border-radius:50%;background:#7c3aed;flex-shrink:0}
+  .logo-name{font-size:20px;font-weight:800;letter-spacing:-0.02em;color:#f0f0f8}
+  .logo-tag{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.1em;color:#7c3aed;margin-top:2px}
+  .meta{text-align:right;font-size:12px;color:#55556a;line-height:1.7}
+  /* Hero */
+  .hero{margin-bottom:36px}
+  .hero h1{font-size:30px;font-weight:900;letter-spacing:-0.025em;color:#f0f0f8;line-height:1.15;margin-bottom:10px}
+  .hero h1 span{color:#a78bfa}
+  .hero-sub{font-size:14px;color:#8888a8;line-height:1.6;max-width:520px}
+  /* Communities */
+  .section-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.1em;color:#55556a;margin-bottom:12px}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:32px}
+  .chip{background:#18181f;border:1px solid #2a2a35;border-radius:100px;padding:5px 13px;font-size:12px;font-weight:500;color:#8888a8}
+  /* Stats row */
+  .stats-row{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:36px}
+  .stat-card{background:#111118;border:1px solid #2a2a35;border-radius:12px;padding:18px 20px}
+  .stat-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.1em;color:#55556a;margin-bottom:6px}
+  .stat-value{font-size:24px;font-weight:800;letter-spacing:-0.02em;color:#f0f0f8}
+  .stat-sub{font-size:11px;color:#55556a;margin-top:2px}
+  /* Pain blocks */
+  .pain-blocks{display:flex;flex-direction:column;gap:20px;margin-bottom:40px}
+  .pain-block{background:#111118;border:1px solid #2a2a35;border-radius:12px;padding:20px 22px}
+  .pain-header{display:flex;align-items:center;gap:12px;margin-bottom:12px}
+  .pain-rank{font-size:11px;font-weight:700;border-radius:6px;padding:3px 8px;flex-shrink:0}
+  .pain-phrase{font-size:15px;font-weight:700;color:#f0f0f8;flex:1;line-height:1.3}
+  .pain-count{font-size:12px;font-weight:600;color:#55556a;white-space:nowrap}
+  .bar-track{height:5px;background:#1e1e28;border-radius:3px;overflow:hidden;margin-bottom:14px}
+  .bar-fill{height:100%;border-radius:3px;transition:width 0.5s}
+  .sample-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;color:#55556a;margin-bottom:8px}
+  .sample-list{list-style:none;display:flex;flex-direction:column;gap:6px}
+  .sample-post{font-size:12px;color:#8888a8;line-height:1.5;padding-left:12px;border-left:2px solid #2a2a35;font-style:italic}
+  /* Footer */
+  .footer{border-top:1px solid #2a2a35;padding-top:24px;display:flex;align-items:center;justify-content:space-between}
+  .footer-left{font-size:12px;color:#55556a;line-height:1.6}
+  .footer-brand{font-size:11px;font-weight:700;color:#7c3aed;text-decoration:none}
+  /* Print */
+  @media print{
+    body{background:#fff;color:#111}
+    .header,.pain-block,.stat-card{border-color:#e5e7eb}
+    .stat-card,.pain-block{background:#f9fafb}
+    .pain-phrase,.stat-value,.hero h1{color:#111}
+    .stat-label,.stat-sub,.section-title,.sample-label,.footer-left,.pain-count,.meta{color:#6b7280}
+    .chip{background:#f3f4f6;border-color:#e5e7eb;color:#374151}
+    .bar-track{background:#e5e7eb}
+    .sample-post{color:#374151;border-color:#d1d5db}
+    .footer{border-color:#e5e7eb}
+    .logo-name{color:#111}
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="header">
+    <div class="logo">
+      <div class="logo-dot"></div>
+      <div>
+        <div class="logo-name">ProblemPulse</div>
+        <div class="logo-tag">Pain Point Intelligence</div>
+      </div>
+    </div>
+    <div class="meta">
+      Generated ${date} at ${time}<br/>
+      ${subreddits.length} communit${subreddits.length === 1 ? "y" : "ies"} · ${totalPosts.toLocaleString()} posts scanned
+    </div>
+  </div>
+
+  <div class="hero">
+    <h1>Top <span>${painPoints.length} Pain Points</span> Right Now</h1>
+    <p class="hero-sub">
+      Real problems extracted from Reddit using NLP and semantic grouping.
+      Each phrase represents a cluster of similar complaints from real users.
+    </p>
+  </div>
+
+  <div class="section-title">Communities Analysed</div>
+  <div class="chips">${subredditChips}</div>
+
+  <div class="stats-row">
+    <div class="stat-card">
+      <div class="stat-label">Posts Scanned</div>
+      <div class="stat-value">${totalPosts.toLocaleString()}</div>
+      <div class="stat-sub">across ${subreddits.length} subreddit${subreddits.length !== 1 ? "s" : ""}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Pain Points Found</div>
+      <div class="stat-value">${painPoints.length}</div>
+      <div class="stat-sub">semantically grouped</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Top Issue</div>
+      <div class="stat-value" style="font-size:14px;line-height:1.4">${escapeHtml(painPoints[0]?.phrase ?? "—")}</div>
+      <div class="stat-sub">${painPoints[0]?.count ?? 0} mentions</div>
+    </div>
+  </div>
+
+  <div class="section-title">Pain Point Breakdown</div>
+  <div class="pain-blocks">${painRows}</div>
+
+  <div class="footer">
+    <div class="footer-left">
+      Data sourced from Reddit's public API · Analysis by NLP phrase extraction &amp; semantic clustering<br/>
+      This report reflects content from the time of generation and may not reflect current trends.
+    </div>
+    <a class="footer-brand" href="https://problempulse.app">ProblemPulse</a>
+  </div>
+</div>
+</body>
+</html>`;
+}
+
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function downloadReport(
+  painPoints: PainPoint[],
+  subreddits: Subreddit[],
+  totalPosts: number
+) {
+  const html = generateReportHTML(painPoints, subreddits, totalPosts);
+  const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const dateStr = new Date().toISOString().slice(0, 10);
+  a.href = url;
+  a.download = `problempulse-report-${dateStr}.html`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// ─── Results Section ──────────────────────────────────────────────────────────
+
 function ResultsSection({
   painPoints,
   subreddits,
@@ -726,7 +924,16 @@ function ResultsSection({
   onRestart: () => void;
 }) {
   const [showModal, setShowModal] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const maxCount = painPoints[0]?.count ?? 1;
+
+  const handleDownload = () => {
+    setDownloading(true);
+    setTimeout(() => {
+      downloadReport(painPoints, subreddits, totalPosts);
+      setDownloading(false);
+    }, 50);
+  };
 
   useEffect(() => {
     const timer = setTimeout(() => setShowModal(true), 3500);
@@ -807,6 +1014,27 @@ function ResultsSection({
               <path d="M2 2v3h3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
             Analyse different communities
+          </button>
+          <button
+            className="btn-ghost"
+            onClick={handleDownload}
+            disabled={downloading}
+            style={{ borderColor: downloading ? "var(--accent)" : undefined, color: downloading ? "var(--accent-light)" : undefined }}
+          >
+            {downloading ? (
+              <>
+                <div style={{ width: 13, height: 13, border: "1.5px solid currentColor", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />
+                Generating…
+              </>
+            ) : (
+              <>
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <path d="M7 1v8M4 6l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                  <path d="M2 11h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                </svg>
+                Download report
+              </>
+            )}
           </button>
           <button
             className="btn-primary"
