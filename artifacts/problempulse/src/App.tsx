@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Chart, BarElement, CategoryScale, LinearScale, Tooltip, Legend } from "chart.js";
+import { Chart, BarController, BarElement, CategoryScale, LinearScale, Tooltip, Legend } from "chart.js";
 import nlp from "compromise";
 
-Chart.register(BarElement, CategoryScale, LinearScale, Tooltip, Legend);
+Chart.register(BarController, BarElement, CategoryScale, LinearScale, Tooltip, Legend);
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
