@@ -1148,6 +1148,7 @@ export default function App() {
       ...subreddits.map((s) => ({ label: `Fetching r/${s.name}`, status: "pending" as const })),
       { label: "Extracting pain signals via NLP", status: "pending" as const },
       { label: "Grouping semantically similar phrases", status: "pending" as const },
+      { label: "Rewriting phrases into clear problem statements", status: "pending" as const },
     ];
     setLoadingSteps(steps);
     setPhase("loading");
@@ -1164,6 +1165,7 @@ export default function App() {
 
       const nlpStepIdx = subreddits.length;
       const mergeStepIdx = subreddits.length + 1;
+      const rewriteStepIdx = subreddits.length + 2;
 
       setStepStatus(nlpStepIdx, "active");
       await new Promise((r) => setTimeout(r, 200)); // allow UI update
@@ -1185,7 +1187,31 @@ export default function App() {
         return;
       }
 
-      setPainPoints(merged);
+      // AI rewrite pass — clean up any phrases that aren't clear problem statements
+      setStepStatus(rewriteStepIdx, "active");
+      let finalPoints = merged;
+      try {
+        const rewriteRes = await fetch("/api/rewrite-phrases", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            phrases: merged.map((p) => p.phrase),
+            subreddits: subreddits.map((s) => s.name),
+          }),
+        });
+        if (rewriteRes.ok) {
+          const { phrases: rewritten } = await rewriteRes.json() as { phrases: string[] };
+          finalPoints = merged.map((p, i) => ({
+            ...p,
+            phrase: rewritten[i] ?? p.phrase,
+          }));
+        }
+      } catch {
+        // Fall back to NLP-only phrases if AI is unavailable
+      }
+      setStepStatus(rewriteStepIdx, "done");
+
+      setPainPoints(finalPoints);
       await new Promise((r) => setTimeout(r, 400));
       setPhase("results");
     } catch (err) {
