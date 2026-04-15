@@ -45,126 +45,194 @@ const POPULAR_SUBREDDITS: Subreddit[] = [
   { name: "careerguidance", title: "r/careerguidance", subscribers: 620000 },
 ];
 
-// ─── Semantic similarity helpers ─────────────────────────────────────────────
+// ─── Stop words (excluded from keyword matching) ──────────────────────────────
+
+const STOP_WORDS = new Set([
+  "the","a","an","and","or","but","in","on","at","to","for","of","with",
+  "by","from","up","about","into","through","is","are","was","were","be",
+  "been","being","have","has","had","do","does","did","will","would","could",
+  "should","may","might","shall","can","need","dare","ought","used","that",
+  "this","these","those","it","its","i","me","my","we","our","you","your",
+  "he","she","they","them","their","what","which","who","how","when","where",
+  "why","all","each","every","both","few","more","most","other","some","such",
+  "no","not","only","same","so","than","too","very","just","also","any","get",
+  "got","my","im","ive","dont","doesnt","didnt","cant","wont","isnt","arent",
+]);
 
 /**
- * Compute a simple Jaccard similarity between two tokenised strings.
+ * Extract meaningful keywords from a phrase (skip stop words, short words).
  */
-function jaccardSimilarity(a: string, b: string): number {
-  const setA = new Set(a.toLowerCase().split(/\s+/));
-  const setB = new Set(b.toLowerCase().split(/\s+/));
-  const intersection = [...setA].filter((t) => setB.has(t)).length;
-  const union = new Set([...setA, ...setB]).size;
-  return union === 0 ? 0 : intersection / union;
+function keywords(phrase: string): string[] {
+  return phrase
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, "")
+    .split(/\s+/)
+    .filter((w) => w.length >= 4 && !STOP_WORDS.has(w));
 }
 
 /**
- * Check if two phrases share a keyword root (stemming-lite using substring).
+ * Shared meaningful keyword count between two phrases (stem-matched, first 5 chars).
  */
-function shareKeywordRoot(a: string, b: string): boolean {
-  const wordsA = a.toLowerCase().split(/\s+/).filter((w) => w.length > 4);
-  const wordsB = b.toLowerCase().split(/\s+/).filter((w) => w.length > 4);
-  for (const wa of wordsA) {
-    for (const wb of wordsB) {
-      if (wa.startsWith(wb.slice(0, 5)) || wb.startsWith(wa.slice(0, 5))) {
-        return true;
+function sharedKeywordCount(a: string, b: string): number {
+  const ka = keywords(a);
+  const kb = keywords(b);
+  let shared = 0;
+  for (const wa of ka) {
+    for (const wb of kb) {
+      if (wa.slice(0, 5) === wb.slice(0, 5)) {
+        shared++;
+        break;
       }
     }
   }
-  return false;
+  return shared;
 }
 
 /**
  * Merge semantically similar phrases into canonical groups.
- * Uses Jaccard similarity + keyword root matching.
+ * Groups are merged if they share 2+ meaningful keywords OR have 40%+ Jaccard overlap.
+ * The canonical label is the shortest phrase in the group (most readable).
  */
 function mergeSemanticGroups(
   phrases: Map<string, { count: number; posts: string[] }>
 ): PainPoint[] {
-  const entries = [...phrases.entries()].map(([phrase, data]) => ({
-    phrase,
-    ...data,
-  }));
+  const entries = [...phrases.entries()]
+    .map(([phrase, data]) => ({ phrase, ...data }))
+    .sort((a, b) => b.count - a.count);
 
   const merged: Array<{ canonical: string; count: number; posts: string[] }> = [];
   const used = new Set<number>();
 
   for (let i = 0; i < entries.length; i++) {
     if (used.has(i)) continue;
-    const group = { ...entries[i] };
+    const group = {
+      phrases: [entries[i].phrase],
+      count: entries[i].count,
+      posts: [...entries[i].posts],
+    };
+
     for (let j = i + 1; j < entries.length; j++) {
       if (used.has(j)) continue;
-      const sim = jaccardSimilarity(entries[i].phrase, entries[j].phrase);
-      const rootMatch = shareKeywordRoot(entries[i].phrase, entries[j].phrase);
-      if (sim > 0.35 || rootMatch) {
+
+      const shared = sharedKeywordCount(entries[i].phrase, entries[j].phrase);
+      const kaLen = keywords(entries[i].phrase).length;
+      const kbLen = keywords(entries[j].phrase).length;
+      const minLen = Math.min(kaLen, kbLen);
+
+      // Merge if: 2+ shared keywords OR shared keywords cover 50%+ of the shorter phrase
+      const shouldMerge = shared >= 2 || (minLen > 0 && shared / minLen >= 0.5);
+
+      if (shouldMerge) {
         group.count += entries[j].count;
         group.posts = [...new Set([...group.posts, ...entries[j].posts])];
+        group.phrases.push(entries[j].phrase);
         used.add(j);
       }
     }
-    merged.push({ canonical: group.phrase, count: group.count, posts: group.posts });
+
+    // Pick the canonical phrase: prefer the shortest one that contains a verb
+    const withVerb = group.phrases.filter((p) => {
+      const doc = nlp(p);
+      return (doc.verbs().out("array") as string[]).length > 0;
+    });
+    const pool = withVerb.length > 0 ? withVerb : group.phrases;
+    const canonical = pool.reduce((best, p) =>
+      p.split(" ").length < best.split(" ").length ? p : best
+    );
+
+    merged.push({ canonical, count: group.count, posts: group.posts });
     used.add(i);
   }
 
   return merged
-    .map((g) => ({ phrase: g.canonical, count: g.count, posts: g.posts }))
     .sort((a, b) => b.count - a.count)
-    .slice(0, 5);
+    .slice(0, 5)
+    .map((g) => ({ phrase: g.canonical, count: g.count, posts: g.posts }));
 }
 
 // ─── Pain point extraction ────────────────────────────────────────────────────
 
 const PAIN_SEEDS = [
-  "can't", "cannot", "can't figure", "struggle", "struggling",
-  "problem", "issue", "help", "frustrated", "frustrating",
-  "difficult", "hard to", "hate", "annoying", "annoyed",
-  "why is", "why does", "how do i", "how to", "need help",
-  "lost", "stuck", "confused", "confusing", "failing", "fail",
-  "broken", "not working", "keeps", "always", "never", "impossible",
-  "overwhelming", "overwhelmed", "exhausted", "burnout", "stressed",
-  "worried", "anxious", "terrible", "horrible", "awful",
+  "can't", "cannot", "struggle", "struggling", "problem", "issue",
+  "help", "frustrated", "frustrating", "difficult", "hard to", "hate",
+  "annoying", "annoyed", "why is", "why does", "how do i", "how to",
+  "need help", "lost", "stuck", "confused", "confusing", "failing", "fail",
+  "broken", "not working", "keeps", "always breaking", "never works",
+  "impossible", "overwhelming", "overwhelmed", "exhausted", "burnout",
+  "stressed", "worried", "anxious", "terrible", "horrible", "awful",
+  "keep", "keeps", "wont", "won't", "unable", "cant stop", "can't stop",
+  "every time", "every day", "no matter", "no idea", "what do i",
 ];
 
 /**
- * Extract pain-point noun phrases from post titles using Compromise.js.
- * Only phrases near pain-signal words are kept.
+ * Extract complete problem-statement phrases from post titles.
+ *
+ * Strategy (in priority order):
+ *  1. Full title — if short (≤14 words) and contains a pain signal, use it as-is.
+ *  2. Clauses — split by Compromise into clauses; keep any clause with a pain signal + verb.
+ *  3. Sliding window — 5-8 word windows that straddle a pain signal keyword.
+ *
+ * All candidates are normalised, then we keep only those ≥4 words long.
+ * Count threshold is 1 (single occurrence) — merging handles deduplication.
  */
 function extractPainPhrases(titles: string[]): Map<string, { count: number; posts: string[] }> {
   const phraseMap = new Map<string, { count: number; posts: string[] }>();
+
+  const addPhrase = (phrase: string, title: string) => {
+    const normalised = phrase
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9\s']/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    const wordCount = normalised.split(" ").length;
+    if (wordCount < 4 || normalised.length < 12) return;
+    const existing = phraseMap.get(normalised);
+    if (existing) {
+      existing.count++;
+      if (!existing.posts.includes(title)) existing.posts.push(title);
+    } else {
+      phraseMap.set(normalised, { count: 1, posts: [title] });
+    }
+  };
 
   for (const title of titles) {
     const lower = title.toLowerCase();
     const hasPainSignal = PAIN_SEEDS.some((seed) => lower.includes(seed));
     if (!hasPainSignal) continue;
 
+    const words = title.trim().split(/\s+/);
+
+    // Strategy 1: use the full title if concise
+    if (words.length >= 4 && words.length <= 14) {
+      addPhrase(title, title);
+    }
+
+    // Strategy 2: extract clauses that contain a pain signal AND a verb
     const doc = nlp(title);
+    const clauses = doc.clauses().out("array") as string[];
+    for (const clause of clauses) {
+      const cl = clause.toLowerCase();
+      const clauseHasPain = PAIN_SEEDS.some((s) => cl.includes(s));
+      if (!clauseHasPain) continue;
+      const clauseDoc = nlp(clause);
+      const hasVerb = (clauseDoc.verbs().out("array") as string[]).length > 0;
+      if (hasVerb) addPhrase(clause, title);
+    }
 
-    // Extract noun phrases (topics, subjects)
-    const nounPhrases = doc.nouns().out("array") as string[];
-    // Extract verb phrases (actions/problems described)
-    const verbPhrases = doc.verbs().out("array") as string[];
-
-    const candidates = [
-      ...nounPhrases.filter((p) => p.split(" ").length >= 2 && p.length > 5),
-      ...verbPhrases.filter((p) => p.split(" ").length >= 2 && p.length > 5),
-    ];
-
-    for (const phrase of candidates) {
-      const normalised = phrase.toLowerCase().trim().replace(/[^a-z0-9\s]/g, "");
-      if (normalised.length < 6 || normalised.split(" ").length < 2) continue;
-      const existing = phraseMap.get(normalised);
-      if (existing) {
-        existing.count++;
-        if (!existing.posts.includes(title)) existing.posts.push(title);
-      } else {
-        phraseMap.set(normalised, { count: 1, posts: [title] });
+    // Strategy 3: sliding windows (5–8 words) that straddle a pain signal
+    for (let size = 5; size <= 8; size++) {
+      for (let start = 0; start <= words.length - size; start++) {
+        const window = words.slice(start, start + size).join(" ");
+        const wl = window.toLowerCase();
+        const windowHasPain = PAIN_SEEDS.some((s) => wl.includes(s));
+        if (!windowHasPain) continue;
+        // Only keep windows that also contain a verb
+        const wDoc = nlp(window);
+        const hasVerb = (wDoc.verbs().out("array") as string[]).length > 0;
+        if (hasVerb) addPhrase(window, title);
       }
     }
-  }
-
-  // Keep only phrases that appear 2+ times
-  for (const [key, val] of phraseMap) {
-    if (val.count < 2) phraseMap.delete(key);
   }
 
   return phraseMap;
