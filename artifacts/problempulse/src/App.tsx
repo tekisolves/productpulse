@@ -164,6 +164,76 @@ const PAIN_SEEDS = [
   "every time", "every day", "no matter", "no idea", "what do i",
 ];
 
+// ─── Phrase validity guard ────────────────────────────────────────────────────
+
+/**
+ * Words that a valid problem phrase must NOT start with.
+ * Phrases beginning with these are fragments (e.g. "in year 3 keep").
+ */
+const FRAGMENT_STARTERS = new Set([
+  "in","on","at","of","for","to","a","an","the","and","or","but","so",
+  "because","since","although","though","while","when","where","if","that",
+  "which","who","whose","with","by","from","into","about","after","before",
+  "during","through","between","among","against","without","within","upon",
+  "across","along","around","behind","below","beneath","beside","beyond",
+  "despite","down","except","inside","near","off","outside","over","past",
+  "throughout","toward","under","until","up","via","than","as","per",
+]);
+
+/**
+ * Words a valid problem phrase must NOT end with — hanging words that
+ * imply the sentence was cut mid-thought (e.g. "…keep", "…in", "…the").
+ */
+const FRAGMENT_ENDERS = new Set([
+  "in","on","at","of","for","to","a","an","the","and","or","but","so",
+  "is","are","was","were","be","been","being","has","have","had",
+  "do","does","did","will","would","could","should","may","might","shall",
+  "can","just","also","very","too","even","only","still","really","get",
+  "got","my","your","their","its","his","her","our","this","that","these",
+  "those","what","which","who","how","when","where","why","about","with",
+  "by","from","into","keep","keeps","kept","not","no","more","most",
+  "than","as","if","then","now","here","there","both","each","every",
+  "always","never","sometimes","often","already","yet","still","back",
+]);
+
+/**
+ * Return true only if the phrase is a complete, standalone problem statement.
+ * Requirements:
+ *  - ≥ 4 words
+ *  - Does not start with a preposition/conjunction/article
+ *  - Does not end with a dangling/incomplete word
+ *  - Contains at least one verb (something is happening)
+ *  - Contains at least one noun or pronoun (something is being described)
+ *  - Has ≥ 2 meaningful content words (ignoring stop words)
+ */
+function isValidPhrase(phrase: string): boolean {
+  const words = phrase.trim().split(/\s+/);
+
+  if (words.length < 4) return false;
+
+  const first = words[0].toLowerCase().replace(/[^a-z]/g, "");
+  const last = words[words.length - 1].toLowerCase().replace(/[^a-z]/g, "");
+
+  if (FRAGMENT_STARTERS.has(first)) return false;
+  if (FRAGMENT_ENDERS.has(last)) return false;
+
+  const doc = nlp(phrase);
+
+  const hasVerb = (doc.verbs().out("array") as string[]).length > 0;
+  if (!hasVerb) return false;
+
+  const hasNoun = (doc.nouns().out("array") as string[]).length > 0;
+  if (!hasNoun) return false;
+
+  const contentWords = words.filter((w) => {
+    const clean = w.toLowerCase().replace(/[^a-z]/g, "");
+    return clean.length >= 4 && !STOP_WORDS.has(clean);
+  });
+  if (contentWords.length < 2) return false;
+
+  return true;
+}
+
 /**
  * Extract complete problem-statement phrases from post titles.
  *
@@ -172,21 +242,20 @@ const PAIN_SEEDS = [
  *  2. Clauses — split by Compromise into clauses; keep any clause with a pain signal + verb.
  *  3. Sliding window — 5-8 word windows that straddle a pain signal keyword.
  *
- * All candidates are normalised, then we keep only those ≥4 words long.
- * Count threshold is 1 (single occurrence) — merging handles deduplication.
+ * Every candidate passes through isValidPhrase() before being accepted.
  */
 function extractPainPhrases(titles: string[]): Map<string, { count: number; posts: string[] }> {
   const phraseMap = new Map<string, { count: number; posts: string[] }>();
 
   const addPhrase = (phrase: string, title: string) => {
+    if (!isValidPhrase(phrase)) return;
     const normalised = phrase
       .toLowerCase()
       .trim()
       .replace(/[^a-z0-9\s']/g, "")
       .replace(/\s+/g, " ")
       .trim();
-    const wordCount = normalised.split(" ").length;
-    if (wordCount < 4 || normalised.length < 12) return;
+    if (normalised.split(" ").length < 4) return;
     const existing = phraseMap.get(normalised);
     if (existing) {
       existing.count++;
