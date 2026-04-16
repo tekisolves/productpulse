@@ -6,7 +6,7 @@ Chart.register(BarController, BarElement, CategoryScale, LinearScale, Tooltip, L
 
 // ─── Google Analytics ─────────────────────────────────────────────────────────
 
-const GA_ID = "G-31NHCWDC6M";
+const GA_ID = "G-8V28F53XS9";
 const CONSENT_KEY = "pp_cookie_consent";
 
 declare global {
