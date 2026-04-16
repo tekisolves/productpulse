@@ -690,7 +690,7 @@ function EmailModal({ onClose, subreddits }: EmailModalProps) {
 
     try {
       // Using Formspree — user should replace FORM_ID with their own
-      const FORMSPREE_ENDPOINT = "https://formspree.io/f/xdkeorpb";
+      const FORMSPREE_ENDPOINT = "https://formspree.io/f/xzdyepba";
       const res = await fetch(FORMSPREE_ENDPOINT, {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
