@@ -4,6 +4,52 @@ import nlp from "compromise";
 
 Chart.register(BarController, BarElement, CategoryScale, LinearScale, Tooltip, Legend);
 
+// ─── Google Analytics ─────────────────────────────────────────────────────────
+
+const GA_ID = "G-31NHCWDC6M";
+const CONSENT_KEY = "pp_cookie_consent";
+
+declare global {
+  interface Window {
+    dataLayer: unknown[];
+    gtag: (...args: unknown[]) => void;
+  }
+}
+
+function loadGA() {
+  if (document.getElementById("ga-script")) return;
+  const script = document.createElement("script");
+  script.id = "ga-script";
+  script.async = true;
+  script.src = `https://www.googletagmanager.com/gtag/js?id=${GA_ID}`;
+  document.head.appendChild(script);
+  window.dataLayer = window.dataLayer || [];
+  window.gtag = function gtag(...args: unknown[]) { window.dataLayer.push(args); };
+  window.gtag("js", new Date());
+  window.gtag("config", GA_ID, { anonymize_ip: true });
+}
+
+function unloadGA() {
+  (window as unknown as Record<string, unknown>)[`ga-disable-${GA_ID}`] = true;
+  document.getElementById("ga-script")?.remove();
+  const suffix = GA_ID.replace("G-", "").replace(/-/g, "_");
+  ["_ga", "_gid", "_gat", `_ga_${suffix}`].forEach((name) => {
+    document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;`;
+    document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/; domain=.${window.location.hostname}`;
+  });
+}
+
+type ConsentValue = "accepted" | "declined" | null;
+
+function getStoredConsent(): ConsentValue {
+  try { return localStorage.getItem(CONSENT_KEY) as ConsentValue; } catch { return null; }
+}
+
+function persistConsent(value: "accepted" | "declined") {
+  try { localStorage.setItem(CONSENT_KEY, value); } catch {}
+  if (value === "accepted") loadGA(); else unloadGA();
+}
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 type Phase = "landing" | "onboarding" | "loading" | "results" | "error";
@@ -678,11 +724,16 @@ function EmailModal({ onClose, subreddits }: EmailModalProps) {
   const [loading, setLoading] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState("");
+  const [marketingConsent, setMarketingConsent] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email.includes("@")) {
       setError("Please enter a valid email address.");
+      return;
+    }
+    if (!marketingConsent) {
+      setError("Please tick the consent box to continue.");
       return;
     }
     setLoading(true);
@@ -754,10 +805,33 @@ function EmailModal({ onClose, subreddits }: EmailModalProps) {
                 required
                 autoFocus
               />
+              <label className="gdpr-checkbox-label">
+                <input
+                  type="checkbox"
+                  checked={marketingConsent}
+                  onChange={(e) => setMarketingConsent(e.target.checked)}
+                  required
+                />
+                <span>
+                  I agree to receive ProblemPulse email updates. I can unsubscribe at any time. Your data is processed per our{" "}
+                  <button
+                    type="button"
+                    className="inline-link"
+                    onClick={() => {
+                      onClose();
+                      setTimeout(() => {
+                        document.dispatchEvent(new CustomEvent("pp:showPrivacy"));
+                      }, 100);
+                    }}
+                  >
+                    Privacy Policy
+                  </button>.
+                </span>
+              </label>
               {error && (
                 <div style={{ fontSize: 13, color: "var(--danger)" }}>{error}</div>
               )}
-              <button className="btn-submit" type="submit" disabled={loading}>
+              <button className="btn-submit" type="submit" disabled={loading || !marketingConsent}>
                 {loading ? (
                   <>
                     <div style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "white", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />
@@ -772,9 +846,6 @@ function EmailModal({ onClose, subreddits }: EmailModalProps) {
                   </>
                 )}
               </button>
-              <div className="modal-privacy">
-                Your email is only used for ProblemPulse updates. No third parties, ever.
-              </div>
             </form>
           </>
         )}
@@ -1125,6 +1196,156 @@ function ResultsSection({
   );
 }
 
+// ─── Privacy Policy Modal ─────────────────────────────────────────────────────
+
+function PrivacyPolicyModal({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="modal privacy-modal animate-fade-in-scale" role="dialog" aria-modal="true" aria-label="Privacy Policy">
+        <button className="modal-close" onClick={onClose} aria-label="Close">✕</button>
+        <h3 style={{ marginBottom: 16 }}>Privacy Policy</h3>
+        <div className="privacy-body">
+          <p><strong>Last updated:</strong> April 2026</p>
+          <p>ProblemPulse (&ldquo;we&rdquo;, &ldquo;us&rdquo;) is committed to protecting your personal data and complying with the General Data Protection Regulation (GDPR) and UK GDPR.</p>
+
+          <h4>1. Who we are</h4>
+          <p>ProblemPulse is operated by its owner (&ldquo;the Controller&rdquo;). For data-related queries, contact us via our website.</p>
+
+          <h4>2. What data we collect</h4>
+          <ul>
+            <li><strong>Email address</strong> — only if you voluntarily subscribe to our mailing list. Legal basis: consent (Art. 6(1)(a) GDPR).</li>
+            <li><strong>Usage analytics</strong> — only if you accept cookies. We use Google Analytics 4 with IP anonymisation enabled. This may collect your anonymised IP address, browser type, device type, pages visited, and session duration. Legal basis: consent (Art. 6(1)(a) GDPR).</li>
+            <li><strong>Reddit post titles</strong> — fetched in real-time from Reddit&rsquo;s public API in your browser. This data is not stored on our servers and never leaves your browser session.</li>
+          </ul>
+
+          <h4>3. How we use your data</h4>
+          <ul>
+            <li>Email: to send you pain-point digests you signed up for.</li>
+            <li>Analytics: to understand how people use ProblemPulse and improve it.</li>
+          </ul>
+
+          <h4>4. Third-party processors</h4>
+          <ul>
+            <li><strong>Formspree</strong> — processes email submissions. See <a href="https://formspree.io/legal/privacy-policy" target="_blank" rel="noopener noreferrer">Formspree Privacy Policy</a>.</li>
+            <li><strong>Google Analytics</strong> — only activated with your consent. See <a href="https://policies.google.com/privacy" target="_blank" rel="noopener noreferrer">Google Privacy Policy</a>.</li>
+            <li><strong>Reddit</strong> — post titles are fetched from Reddit&rsquo;s public API. See <a href="https://www.reddit.com/policies/privacy-policy" target="_blank" rel="noopener noreferrer">Reddit Privacy Policy</a>.</li>
+          </ul>
+
+          <h4>5. Data retention</h4>
+          <p>Email addresses are retained until you unsubscribe. Analytics data is retained per Google Analytics default settings (26 months). We do not store Reddit post content.</p>
+
+          <h4>6. Your rights</h4>
+          <p>Under GDPR you have the right to: access your data, rectify inaccurate data, erase your data, restrict processing, data portability, and withdraw consent at any time. To exercise these rights, contact us via the website. You also have the right to lodge a complaint with your local data protection authority (e.g. the ICO in the UK).</p>
+
+          <h4>7. Withdrawing consent</h4>
+          <p>You can withdraw cookie consent at any time using the &ldquo;Cookie Settings&rdquo; link in the banner at the bottom of the page. To unsubscribe from emails, use the unsubscribe link in any email we send.</p>
+
+          <h4>8. Cookies</h4>
+          <p><strong>Essential cookies:</strong> We do not use any essential tracking cookies. Your consent preference is stored in your browser&rsquo;s local storage (not a cookie) and is never sent to our servers.</p>
+          <p><strong>Analytics cookies (optional):</strong> Google Analytics sets <code>_ga</code>, <code>_gid</code>, and related cookies to distinguish users and sessions. These are only set after you give consent.</p>
+
+          <h4>9. Children</h4>
+          <p>ProblemPulse is not directed at children under 16. We do not knowingly collect data from children.</p>
+
+          <h4>10. Changes to this policy</h4>
+          <p>We may update this policy. Significant changes will be noted on this page with a revised &ldquo;Last updated&rdquo; date.</p>
+        </div>
+        <button className="btn-primary" onClick={onClose} style={{ marginTop: 24, width: "100%" }}>Close</button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Cookie Settings Modal ────────────────────────────────────────────────────
+
+function CookieSettingsModal({
+  current,
+  onSave,
+  onClose,
+  onShowPrivacy,
+}: {
+  current: ConsentValue;
+  onSave: (v: "accepted" | "declined") => void;
+  onClose: () => void;
+  onShowPrivacy: () => void;
+}) {
+  const [analytics, setAnalytics] = useState(current === "accepted");
+
+  return (
+    <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="modal animate-fade-in-scale" role="dialog" aria-modal="true" aria-label="Cookie Settings">
+        <button className="modal-close" onClick={onClose} aria-label="Close">✕</button>
+        <div className="modal-icon">🍪</div>
+        <h3>Cookie Settings</h3>
+        <p className="modal-desc">Manage which cookies ProblemPulse uses. Essential functions always run — they keep the site working and store your preferences locally.</p>
+
+        <div className="cookie-toggle-list">
+          <div className="cookie-toggle-row">
+            <div className="cookie-toggle-info">
+              <div className="cookie-toggle-title">Essential</div>
+              <div className="cookie-toggle-desc">Stores your cookie preference in local storage. Always active.</div>
+            </div>
+            <div className="cookie-toggle-always">Always on</div>
+          </div>
+
+          <div className="cookie-toggle-row">
+            <div className="cookie-toggle-info">
+              <div className="cookie-toggle-title">Analytics (Google Analytics 4)</div>
+              <div className="cookie-toggle-desc">Helps us understand how visitors use the site. IP anonymisation is enabled. No personal data is shared with advertisers.</div>
+            </div>
+            <label className="toggle-switch" aria-label="Enable analytics cookies">
+              <input
+                type="checkbox"
+                checked={analytics}
+                onChange={(e) => setAnalytics(e.target.checked)}
+              />
+              <span className="toggle-slider" />
+            </label>
+          </div>
+        </div>
+
+        <button
+          className="btn-primary"
+          style={{ marginTop: 20, width: "100%" }}
+          onClick={() => { onSave(analytics ? "accepted" : "declined"); onClose(); }}
+        >
+          Save preferences
+        </button>
+        <button className="cookie-privacy-link" onClick={onShowPrivacy}>Read our Privacy Policy</button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Cookie Consent Banner ────────────────────────────────────────────────────
+
+function CookieBanner({
+  onAccept,
+  onDecline,
+  onSettings,
+  onPrivacy,
+}: {
+  onAccept: () => void;
+  onDecline: () => void;
+  onSettings: () => void;
+  onPrivacy: () => void;
+}) {
+  return (
+    <div className="cookie-banner" role="region" aria-label="Cookie consent">
+      <div className="cookie-banner-text">
+        <span>We use optional analytics cookies to improve ProblemPulse. Your email (if provided) is processed by Formspree. No cookies are set without your consent.</span>
+        <button className="cookie-text-btn" onClick={onPrivacy}>Privacy Policy</button>
+        <span>·</span>
+        <button className="cookie-text-btn" onClick={onSettings}>Cookie Settings</button>
+      </div>
+      <div className="cookie-banner-actions">
+        <button className="cookie-btn-decline" onClick={onDecline}>Decline</button>
+        <button className="cookie-btn-accept" onClick={onAccept}>Accept all</button>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main App ─────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -1134,6 +1355,22 @@ export default function App() {
   const [totalPosts, setTotalPosts] = useState(0);
   const [errorMsg, setErrorMsg] = useState("");
   const [loadingSteps, setLoadingSteps] = useState<LoadingStep[]>([]);
+
+  // ── GDPR consent state ────────────────────────────────────────────────────
+  const [consent, setConsent] = useState<ConsentValue>(getStoredConsent);
+  const [showCookieSettings, setShowCookieSettings] = useState(false);
+  const [showPrivacyPolicy, setShowPrivacyPolicy] = useState(false);
+
+  useEffect(() => {
+    if (consent === "accepted") loadGA();
+    const handler = () => setShowPrivacyPolicy(true);
+    document.addEventListener("pp:showPrivacy", handler);
+    return () => document.removeEventListener("pp:showPrivacy", handler);
+  }, []);
+
+  const handleAccept = () => { persistConsent("accepted"); setConsent("accepted"); };
+  const handleDecline = () => { persistConsent("declined"); setConsent("declined"); };
+  const handleSaveSettings = (v: "accepted" | "declined") => { persistConsent(v); setConsent(v); };
 
   const setStepStatus = (index: number, status: LoadingStep["status"]) => {
     setLoadingSteps((prev) =>
@@ -1260,6 +1497,39 @@ export default function App() {
             </button>
           </div>
         </section>
+      )}
+
+      {consent === null && (
+        <CookieBanner
+          onAccept={handleAccept}
+          onDecline={handleDecline}
+          onSettings={() => setShowCookieSettings(true)}
+          onPrivacy={() => setShowPrivacyPolicy(true)}
+        />
+      )}
+
+      {consent !== null && (
+        <button
+          className="cookie-settings-float"
+          onClick={() => setShowCookieSettings(true)}
+          aria-label="Cookie settings"
+          title="Cookie settings"
+        >
+          🍪
+        </button>
+      )}
+
+      {showCookieSettings && (
+        <CookieSettingsModal
+          current={consent}
+          onSave={handleSaveSettings}
+          onClose={() => setShowCookieSettings(false)}
+          onShowPrivacy={() => { setShowCookieSettings(false); setShowPrivacyPolicy(true); }}
+        />
+      )}
+
+      {showPrivacyPolicy && (
+        <PrivacyPolicyModal onClose={() => setShowPrivacyPolicy(false)} />
       )}
     </div>
   );
