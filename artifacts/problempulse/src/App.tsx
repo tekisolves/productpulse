@@ -451,6 +451,154 @@ function LandingSection({ onStart }: { onStart: () => void }) {
   );
 }
 
+// ─── Trending subreddits (preloaded teaser) ──────────────────────────────────
+
+interface TrendingItem {
+  name: string;
+  count: number;
+  subscribers: number;
+}
+
+async function fetchTrendingSubreddits(): Promise<TrendingItem[]> {
+  const res = await fetch("https://www.reddit.com/r/popular/hot.json?limit=100", {
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) throw new Error(`Reddit returned ${res.status}`);
+  const json = await res.json();
+  const posts = json?.data?.children ?? [];
+  const counts = new Map<string, { count: number; subscribers: number }>();
+  for (const p of posts) {
+    const name = p?.data?.subreddit;
+    if (!name) continue;
+    const subs = p?.data?.subreddit_subscribers ?? 0;
+    const existing = counts.get(name);
+    if (existing) existing.count++;
+    else counts.set(name, { count: 1, subscribers: subs });
+  }
+  return Array.from(counts.entries())
+    .map(([name, d]) => ({ name, count: d.count, subscribers: d.subscribers }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 5);
+}
+
+function TrendingChart({ onPick }: { onPick: (sub: Subreddit) => void }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const chartRef = useRef<Chart | null>(null);
+  const [trending, setTrending] = useState<TrendingItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await fetchTrendingSubreddits();
+        if (!cancelled) {
+          setTrending(data);
+          setLoading(false);
+        }
+      } catch {
+        if (!cancelled) {
+          setError(true);
+          setLoading(false);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!canvasRef.current || trending.length === 0) return;
+    chartRef.current?.destroy();
+    const colors = ["#7c3aed", "#06b6d4", "#10b981", "#f59e0b", "#ef4444"];
+    chartRef.current = new Chart(canvasRef.current, {
+      type: "bar",
+      data: {
+        labels: trending.map((t) => `r/${t.name}`),
+        datasets: [{
+          label: "Posts on Reddit's front page right now",
+          data: trending.map((t) => t.count),
+          backgroundColor: colors.slice(0, trending.length),
+          borderRadius: 6,
+          borderSkipped: false,
+        }],
+      },
+      options: {
+        indexAxis: "y",
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: "#0a0a0f",
+            titleColor: "#f0f0f8",
+            bodyColor: "#8888a8",
+            borderColor: "#2a2a35",
+            borderWidth: 1,
+            padding: 10,
+            callbacks: {
+              label: (ctx) => `${ctx.parsed.x} posts on front page`,
+            },
+          },
+        },
+        scales: {
+          x: {
+            grid: { color: "rgba(255,255,255,0.04)" },
+            ticks: { color: "#55556a", font: { size: 11 } },
+          },
+          y: {
+            grid: { display: false },
+            ticks: { color: "#f0f0f8", font: { size: 13, weight: 600 } },
+          },
+        },
+      },
+    });
+    return () => { chartRef.current?.destroy(); };
+  }, [trending]);
+
+  if (error) return null;
+
+  return (
+    <div className="trending-card animate-fade-in">
+      <div className="trending-head">
+        <div className="trending-pulse">
+          <span className="pulse-dot" />
+          <span className="pulse-text">LIVE</span>
+        </div>
+        <div>
+          <div className="trending-title">Trending on Reddit right now</div>
+          <div className="trending-sub">Top 5 communities buzzing on the front page · click any to add it to your scan</div>
+        </div>
+      </div>
+      {loading ? (
+        <div className="trending-loader">
+          <div className="trending-spinner" />
+          Loading live data from Reddit…
+        </div>
+      ) : (
+        <>
+          <div className="trending-chart-wrap">
+            <canvas ref={canvasRef} />
+          </div>
+          <div className="trending-pills">
+            {trending.map((t) => (
+              <button
+                key={t.name}
+                className="trending-pill"
+                onClick={() => onPick({ name: t.name, title: `r/${t.name}`, subscribers: t.subscribers })}
+                title={`${t.subscribers.toLocaleString()} subscribers`}
+              >
+                <span className="trending-pill-plus">+</span>
+                r/{t.name}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function OnboardingSection({
   onAnalyse,
 }: {
@@ -491,8 +639,17 @@ function OnboardingSection({
 
   const isSelected = (sub: Subreddit) => selected.some((s) => s.name === sub.name);
 
+  const handlePick = (sub: Subreddit) => {
+    setSelected((prev) => {
+      if (prev.some((s) => s.name === sub.name)) return prev;
+      if (prev.length >= MAX) return prev;
+      return [...prev, sub];
+    });
+  };
+
   return (
     <section className="onboarding animate-fade-in">
+      <TrendingChart onPick={handlePick} />
       <div className="onboarding-card">
         <div className="section-label">
           <div className="section-label-dot" />
