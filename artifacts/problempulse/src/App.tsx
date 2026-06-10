@@ -1610,9 +1610,13 @@ export default function App() {
       setPhase("results");
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Unknown error";
-      if (msg.includes("CORS") || msg.includes("NetworkError") || msg.includes("Failed to fetch")) {
+      if (msg.includes("403")) {
         setErrorMsg(
-          "Could not reach Reddit's API. This is usually a temporary network issue. Please try again in a moment."
+          "Reddit blocked this request. If you're testing inside Replit's preview pane, open the published app directly — Reddit allows requests from real browsers but blocks datacenter IPs. If you're already on the published app, wait 30 seconds and try again."
+        );
+      } else if (msg.includes("CORS") || msg.includes("NetworkError") || msg.includes("Failed to fetch")) {
+        setErrorMsg(
+          "Could not reach Reddit's API. Please make sure you're using the published app URL, not the Replit preview pane, then try again."
         );
       } else {
         setErrorMsg(`Something went wrong: ${msg}`);
