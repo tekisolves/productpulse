@@ -29,41 +29,46 @@ function loadGA() {
   window.gtag("config", GA_ID, { anonymize_ip: true });
 }
 
-function unloadGA() {
+function disableGA() {
   (window as unknown as Record<string, unknown>)[`ga-disable-${GA_ID}`] = true;
-  document.getElementById("ga-script")?.remove();
-  const suffix = GA_ID.replace("G-", "").replace(/-/g, "_");
-  ["_ga", "_gid", "_gat", `_ga_${suffix}`].forEach((name) => {
-    document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;`;
-    document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/; domain=.${window.location.hostname}`;
+  ["_ga", "_gid", "_gat"].forEach((name) => {
+    document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/; domain=${location.hostname}`;
   });
 }
 
 type ConsentValue = "accepted" | "declined" | null;
 
 function getStoredConsent(): ConsentValue {
-  try { return localStorage.getItem(CONSENT_KEY) as ConsentValue; } catch { return null; }
+  try {
+    const v = localStorage.getItem(CONSENT_KEY);
+    if (v === "accepted" || v === "declined") return v;
+  } catch { /* ignore */ }
+  return null;
 }
 
-function persistConsent(value: "accepted" | "declined") {
-  try { localStorage.setItem(CONSENT_KEY, value); } catch {}
-  if (value === "accepted") loadGA(); else unloadGA();
+function persistConsent(v: "accepted" | "declined") {
+  try { localStorage.setItem(CONSENT_KEY, v); } catch { /* ignore */ }
+  if (v === "accepted") loadGA();
+  else disableGA();
 }
-
-// ─── Types ───────────────────────────────────────────────────────────────────
 
 type Phase = "landing" | "onboarding" | "loading" | "results" | "error";
 
-interface Subreddit {
-  name: string;
-  title: string;
-  subscribers: number;
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface HNTopic {
+  id: string;
+  label: string;
+  query: string;
+  icon: string;
 }
 
 interface PainPoint {
   phrase: string;
   count: number;
   posts: string[];
+  evidence: string[];
+  noSolution: boolean;
 }
 
 interface LoadingStep {
@@ -71,27 +76,24 @@ interface LoadingStep {
   status: "pending" | "active" | "done";
 }
 
-// ─── Popular subreddits for quick-select ─────────────────────────────────────
+// ─── HN Topic categories ──────────────────────────────────────────────────────
 
-const POPULAR_SUBREDDITS: Subreddit[] = [
-  { name: "entrepreneur", title: "r/entrepreneur", subscribers: 2100000 },
-  { name: "startups", title: "r/startups", subscribers: 1300000 },
-  { name: "smallbusiness", title: "r/smallbusiness", subscribers: 1100000 },
-  { name: "Parenting", title: "r/Parenting", subscribers: 5200000 },
-  { name: "personalfinance", title: "r/personalfinance", subscribers: 19000000 },
-  { name: "SaaS", title: "r/SaaS", subscribers: 450000 },
-  { name: "productivity", title: "r/productivity", subscribers: 1700000 },
-  { name: "marketing", title: "r/marketing", subscribers: 1300000 },
-  { name: "freelance", title: "r/freelance", subscribers: 450000 },
-  { name: "webdev", title: "r/webdev", subscribers: 1800000 },
-  { name: "datascience", title: "r/datascience", subscribers: 1400000 },
-  { name: "fitness", title: "r/fitness", subscribers: 12000000 },
-  { name: "relationship_advice", title: "r/relationship_advice", subscribers: 4800000 },
-  { name: "mentalhealth", title: "r/mentalhealth", subscribers: 1100000 },
-  { name: "careerguidance", title: "r/careerguidance", subscribers: 620000 },
+const HN_TOPICS: HNTopic[] = [
+  { id: "saas", label: "SaaS & B2B", query: "SaaS software product subscription B2B", icon: "📦" },
+  { id: "startup", label: "Startups", query: "startup founder building indie hacker side project", icon: "🚀" },
+  { id: "devtools", label: "Dev Tools", query: "developer tools programming workflow IDE editor", icon: "🛠️" },
+  { id: "ai", label: "AI & ML", query: "AI machine learning LLM GPT model training", icon: "🤖" },
+  { id: "productivity", label: "Productivity", query: "productivity workflow automation focus task management", icon: "⚡" },
+  { id: "hiring", label: "Hiring & Jobs", query: "hiring interview job career remote work", icon: "💼" },
+  { id: "design", label: "Design & UX", query: "design UX user interface product usability", icon: "🎨" },
+  { id: "data", label: "Data & Analytics", query: "data analytics database pipeline warehouse", icon: "📊" },
+  { id: "marketing", label: "Marketing & Growth", query: "marketing growth SEO acquisition retention", icon: "📈" },
+  { id: "finance", label: "Finance & Payments", query: "finance payments billing subscription pricing fintech", icon: "💳" },
+  { id: "security", label: "Security & Privacy", query: "security privacy authentication compliance infosec", icon: "🔒" },
+  { id: "remote", label: "Remote Work", query: "remote work distributed team async communication", icon: "🌍" },
 ];
 
-// ─── Stop words (excluded from keyword matching) ──────────────────────────────
+// ─── Stop words ───────────────────────────────────────────────────────────────
 
 const STOP_WORDS = new Set([
   "the","a","an","and","or","but","in","on","at","to","for","of","with",
@@ -105,9 +107,6 @@ const STOP_WORDS = new Set([
   "got","my","im","ive","dont","doesnt","didnt","cant","wont","isnt","arent",
 ]);
 
-/**
- * Extract meaningful keywords from a phrase (skip stop words, short words).
- */
 function keywords(phrase: string): string[] {
   return phrase
     .toLowerCase()
@@ -116,37 +115,26 @@ function keywords(phrase: string): string[] {
     .filter((w) => w.length >= 4 && !STOP_WORDS.has(w));
 }
 
-/**
- * Shared meaningful keyword count between two phrases (stem-matched, first 5 chars).
- */
 function sharedKeywordCount(a: string, b: string): number {
   const ka = keywords(a);
   const kb = keywords(b);
   let shared = 0;
   for (const wa of ka) {
     for (const wb of kb) {
-      if (wa.slice(0, 5) === wb.slice(0, 5)) {
-        shared++;
-        break;
-      }
+      if (wa.slice(0, 5) === wb.slice(0, 5)) { shared++; break; }
     }
   }
   return shared;
 }
 
-/**
- * Merge semantically similar phrases into canonical groups.
- * Groups are merged if they share 2+ meaningful keywords OR have 40%+ Jaccard overlap.
- * The canonical label is the shortest phrase in the group (most readable).
- */
 function mergeSemanticGroups(
-  phrases: Map<string, { count: number; posts: string[] }>
+  phrases: Map<string, { count: number; posts: string[]; evidence: string[] }>
 ): PainPoint[] {
   const entries = [...phrases.entries()]
     .map(([phrase, data]) => ({ phrase, ...data }))
     .sort((a, b) => b.count - a.count);
 
-  const merged: Array<{ canonical: string; count: number; posts: string[] }> = [];
+  const merged: Array<{ canonical: string; count: number; posts: string[]; evidence: string[] }> = [];
   const used = new Set<number>();
 
   for (let i = 0; i < entries.length; i++) {
@@ -155,28 +143,25 @@ function mergeSemanticGroups(
       phrases: [entries[i].phrase],
       count: entries[i].count,
       posts: [...entries[i].posts],
+      evidence: [...entries[i].evidence],
     };
 
     for (let j = i + 1; j < entries.length; j++) {
       if (used.has(j)) continue;
-
       const shared = sharedKeywordCount(entries[i].phrase, entries[j].phrase);
       const kaLen = keywords(entries[i].phrase).length;
       const kbLen = keywords(entries[j].phrase).length;
       const minLen = Math.min(kaLen, kbLen);
-
-      // Merge if: 2+ shared keywords OR shared keywords cover 50%+ of the shorter phrase
       const shouldMerge = shared >= 2 || (minLen > 0 && shared / minLen >= 0.5);
-
       if (shouldMerge) {
         group.count += entries[j].count;
         group.posts = [...new Set([...group.posts, ...entries[j].posts])];
+        group.evidence = [...new Set([...group.evidence, ...entries[j].evidence])].slice(0, 4);
         group.phrases.push(entries[j].phrase);
         used.add(j);
       }
     }
 
-    // Pick the canonical phrase: prefer the shortest one that contains a verb
     const withVerb = group.phrases.filter((p) => {
       const doc = nlp(p);
       return (doc.verbs().out("array") as string[]).length > 0;
@@ -186,36 +171,54 @@ function mergeSemanticGroups(
       p.split(" ").length < best.split(" ").length ? p : best
     );
 
-    merged.push({ canonical, count: group.count, posts: group.posts });
+    merged.push({ canonical, count: group.count, posts: group.posts, evidence: group.evidence });
     used.add(i);
   }
 
   return merged
     .sort((a, b) => b.count - a.count)
     .slice(0, 5)
-    .map((g) => ({ phrase: g.canonical, count: g.count, posts: g.posts }));
+    .map((g) => ({
+      phrase: g.canonical,
+      count: g.count,
+      posts: g.posts,
+      evidence: g.evidence.slice(0, 3),
+      noSolution: g.evidence.filter(hasSolutionMention).length < Math.ceil(g.evidence.length * 0.25),
+    }));
 }
 
-// ─── Pain point extraction ────────────────────────────────────────────────────
+// ─── Pain signals ─────────────────────────────────────────────────────────────
 
 const PAIN_SEEDS = [
   "can't", "cannot", "struggle", "struggling", "problem", "issue",
   "help", "frustrated", "frustrating", "difficult", "hard to", "hate",
   "annoying", "annoyed", "why is", "why does", "how do i", "how to",
   "need help", "lost", "stuck", "confused", "confusing", "failing", "fail",
-  "broken", "not working", "keeps", "always breaking", "never works",
-  "impossible", "overwhelming", "overwhelmed", "exhausted", "burnout",
-  "stressed", "worried", "anxious", "terrible", "horrible", "awful",
-  "keep", "keeps", "wont", "won't", "unable", "cant stop", "can't stop",
-  "every time", "every day", "no matter", "no idea", "what do i",
+  "broken", "not working", "keeps", "impossible", "overwhelming", "overwhelmed",
+  "terrible", "horrible", "awful", "unable", "no idea", "what do i",
+  "wish", "workaround", "manual", "spreadsheet", "no tool", "doesn't exist",
+  "painful", "nightmare", "there should be", "someone should build",
+  "why isn't there", "have to manually",
+];
+
+// Pain keywords specifically for comment scanning
+const PAIN_KEYWORDS = [
+  "wish", "frustrating", "frustrated", "broken", "manual", "workaround",
+  "spreadsheet", "annoying", "annoyed", "hate", "no tool", "doesn't exist",
+  "cant find", "can't find", "no solution", "nothing works", "have to manually",
+  "painful", "nightmare", "terrible", "awful", "stuck", "impossible",
+  "keeps breaking", "i wish", "why isn't there", "why is there no",
+  "there should be", "someone should build", "always fails",
+];
+
+const SOLUTION_PHRASES = [
+  "use ", "try ", "you can ", "there's ", "there is ", "have you tried",
+  "check out", "we use", "works great", "works well", "we built", "i built",
+  "i use", "just use", "we switched to", "recommend", "solved it",
 ];
 
 // ─── Phrase validity guard ────────────────────────────────────────────────────
 
-/**
- * Words that a valid problem phrase must NOT start with.
- * Phrases beginning with these are fragments (e.g. "in year 3 keep").
- */
 const FRAGMENT_STARTERS = new Set([
   "in","on","at","of","for","to","a","an","the","and","or","but","so",
   "because","since","although","though","while","when","where","if","that",
@@ -226,10 +229,6 @@ const FRAGMENT_STARTERS = new Set([
   "throughout","toward","under","until","up","via","than","as","per",
 ]);
 
-/**
- * Words a valid problem phrase must NOT end with — hanging words that
- * imply the sentence was cut mid-thought (e.g. "…keep", "…in", "…the").
- */
 const FRAGMENT_ENDERS = new Set([
   "in","on","at","of","for","to","a","an","the","and","or","but","so",
   "is","are","was","were","be","been","being","has","have","had",
@@ -242,110 +241,79 @@ const FRAGMENT_ENDERS = new Set([
   "always","never","sometimes","often","already","yet","still","back",
 ]);
 
-/**
- * Return true only if the phrase is a complete, standalone problem statement.
- * Requirements:
- *  - ≥ 4 words
- *  - Does not start with a preposition/conjunction/article
- *  - Does not end with a dangling/incomplete word
- *  - Contains at least one verb (something is happening)
- *  - Contains at least one noun or pronoun (something is being described)
- *  - Has ≥ 2 meaningful content words (ignoring stop words)
- */
 function isValidPhrase(phrase: string): boolean {
   const words = phrase.trim().split(/\s+/);
-
   if (words.length < 4) return false;
-
   const first = words[0].toLowerCase().replace(/[^a-z]/g, "");
   const last = words[words.length - 1].toLowerCase().replace(/[^a-z]/g, "");
-
   if (FRAGMENT_STARTERS.has(first)) return false;
   if (FRAGMENT_ENDERS.has(last)) return false;
-
   const doc = nlp(phrase);
-
-  const hasVerb = (doc.verbs().out("array") as string[]).length > 0;
-  if (!hasVerb) return false;
-
-  const hasNoun = (doc.nouns().out("array") as string[]).length > 0;
-  if (!hasNoun) return false;
-
+  if ((doc.verbs().out("array") as string[]).length === 0) return false;
+  if ((doc.nouns().out("array") as string[]).length === 0) return false;
   const contentWords = words.filter((w) => {
     const clean = w.toLowerCase().replace(/[^a-z]/g, "");
     return clean.length >= 4 && !STOP_WORDS.has(clean);
   });
-  if (contentWords.length < 2) return false;
-
-  return true;
+  return contentWords.length >= 2;
 }
 
-/**
- * Extract complete problem-statement phrases from post titles.
- *
- * Strategy (in priority order):
- *  1. Full title — if short (≤14 words) and contains a pain signal, use it as-is.
- *  2. Clauses — split by Compromise into clauses; keep any clause with a pain signal + verb.
- *  3. Sliding window — 5-8 word windows that straddle a pain signal keyword.
- *
- * Every candidate passes through isValidPhrase() before being accepted.
- */
-function extractPainPhrases(titles: string[]): Map<string, { count: number; posts: string[] }> {
-  const phraseMap = new Map<string, { count: number; posts: string[] }>();
+function extractPainPhrases(
+  texts: string[],
+  evidenceMap: Map<string, string[]>
+): Map<string, { count: number; posts: string[]; evidence: string[] }> {
+  const phraseMap = new Map<string, { count: number; posts: string[]; evidence: string[] }>();
 
-  const addPhrase = (phrase: string, title: string) => {
+  const addPhrase = (phrase: string, source: string, isComment: boolean) => {
     if (!isValidPhrase(phrase)) return;
     const normalised = phrase
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9\s']/g, "")
-      .replace(/\s+/g, " ")
-      .trim();
+      .toLowerCase().trim()
+      .replace(/[^a-z0-9\s']/g, "").replace(/\s+/g, " ").trim();
     if (normalised.split(" ").length < 4) return;
     const existing = phraseMap.get(normalised);
+    const ev = isComment && evidenceMap.get(source) ? [source] : [];
     if (existing) {
       existing.count++;
-      if (!existing.posts.includes(title)) existing.posts.push(title);
+      if (!existing.posts.includes(source)) existing.posts.push(source);
+      if (isComment && !existing.evidence.includes(source)) existing.evidence.push(source);
     } else {
-      phraseMap.set(normalised, { count: 1, posts: [title] });
+      phraseMap.set(normalised, { count: 1, posts: [source], evidence: ev });
     }
   };
 
-  for (const title of titles) {
-    const lower = title.toLowerCase();
+  for (const text of texts) {
+    const lower = text.toLowerCase();
     const hasPainSignal = PAIN_SEEDS.some((seed) => lower.includes(seed));
     if (!hasPainSignal) continue;
 
-    const words = title.trim().split(/\s+/);
+    const isComment = evidenceMap.has(text);
+    const words = text.trim().split(/\s+/);
 
-    // Strategy 1: use the full title if concise
-    if (words.length >= 4 && words.length <= 14) {
-      addPhrase(title, title);
+    if (words.length >= 4 && words.length <= 18) {
+      addPhrase(text, text, isComment);
     }
 
-    // Strategy 2: extract clauses that contain a pain signal AND a verb
-    const doc = nlp(title);
+    const doc = nlp(text);
     const clauses = doc.clauses().out("array") as string[];
     for (const clause of clauses) {
       const cl = clause.toLowerCase();
       const clauseHasPain = PAIN_SEEDS.some((s) => cl.includes(s));
       if (!clauseHasPain) continue;
       const clauseDoc = nlp(clause);
-      const hasVerb = (clauseDoc.verbs().out("array") as string[]).length > 0;
-      if (hasVerb) addPhrase(clause, title);
+      if ((clauseDoc.verbs().out("array") as string[]).length > 0) {
+        addPhrase(clause, text, isComment);
+      }
     }
 
-    // Strategy 3: sliding windows (5–8 words) that straddle a pain signal
     for (let size = 5; size <= 8; size++) {
       for (let start = 0; start <= words.length - size; start++) {
         const window = words.slice(start, start + size).join(" ");
         const wl = window.toLowerCase();
-        const windowHasPain = PAIN_SEEDS.some((s) => wl.includes(s));
-        if (!windowHasPain) continue;
-        // Only keep windows that also contain a verb
+        if (!PAIN_SEEDS.some((s) => wl.includes(s))) continue;
         const wDoc = nlp(window);
-        const hasVerb = (wDoc.verbs().out("array") as string[]).length > 0;
-        if (hasVerb) addPhrase(window, title);
+        if ((wDoc.verbs().out("array") as string[]).length > 0) {
+          addPhrase(window, text, isComment);
+        }
       }
     }
   }
@@ -353,138 +321,95 @@ function extractPainPhrases(titles: string[]): Map<string, { count: number; post
   return phraseMap;
 }
 
-// ─── Reddit fetcher ───────────────────────────────────────────────────────────
+// ─── HN helpers ───────────────────────────────────────────────────────────────
 
-async function fetchSubredditTitles(subreddit: string): Promise<string[]> {
-  const url = `https://www.reddit.com/r/${subreddit}/hot.json?limit=100`;
-  const res = await fetch(url, {
-    headers: { "Accept": "application/json" },
-  });
-  if (!res.ok) throw new Error(`Reddit returned ${res.status} for r/${subreddit}`);
-  const json = await res.json();
-  const posts = json?.data?.children ?? [];
-  return posts
-    .filter((p: { data: { is_self: boolean; title: string } }) => !p.data.is_self || p.data.title)
-    .map((p: { data: { title: string } }) => p.data.title as string);
+function hasPainKeyword(text: string): boolean {
+  const lower = text.toLowerCase();
+  return PAIN_KEYWORDS.some((k) => lower.includes(k));
 }
 
-// ─── Subreddit search via Reddit's public API ─────────────────────────────────
+function hasSolutionMention(text: string): boolean {
+  const lower = text.toLowerCase();
+  return SOLUTION_PHRASES.some((p) => lower.includes(p));
+}
 
-async function searchSubreddits(query: string): Promise<Subreddit[]> {
-  if (!query.trim()) return [];
+function stripHtml(html: string): string {
+  return html
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/&#x2F;/g, "/")
+    .replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim();
+}
+
+// ─── HN Algolia API ───────────────────────────────────────────────────────────
+
+const HN_API = "https://hn.algolia.com/api/v1";
+
+interface HNPost {
+  objectID: string;
+  title: string;
+  num_comments: number;
+  points: number;
+  author: string;
+}
+
+interface HNComment {
+  objectID: string;
+  comment_text: string | null;
+  author: string;
+}
+
+async function fetchHNPostsForTopic(topic: HNTopic, sortBy: "recent" | "popular"): Promise<HNPost[]> {
+  const endpoint = sortBy === "recent" ? "search_by_date" : "search";
+  const url = `${HN_API}/${endpoint}?query=${encodeURIComponent(topic.query)}&tags=ask_hn&hitsPerPage=30&numericFilters=num_comments%3E5`;
+  const res = await fetch(url, { headers: { Accept: "application/json" } });
+  if (!res.ok) throw new Error(`HN API returned ${res.status}`);
+  const data = await res.json();
+  const posts: HNPost[] = (data.hits ?? []).map((h: Record<string, unknown>) => ({
+    objectID: String(h.objectID ?? ""),
+    title: String(h.title ?? ""),
+    num_comments: Number(h.num_comments ?? 0),
+    points: Number(h.points ?? 0),
+    author: String(h.author ?? ""),
+  }));
+  return posts.sort((a, b) => b.num_comments - a.num_comments);
+}
+
+async function fetchHNComments(storyId: string): Promise<HNComment[]> {
+  const url = `${HN_API}/search?tags=comment,story_${storyId}&hitsPerPage=100`;
   try {
-    const url = `https://www.reddit.com/subreddits/search.json?q=${encodeURIComponent(query)}&limit=6`;
-    const res = await fetch(url, { headers: { "Accept": "application/json" } });
-    if (!res.ok) throw new Error("search failed");
-    const json = await res.json();
-    const children = json?.data?.children ?? [];
-    return children.map((c: { data: { display_name: string; title: string; subscribers: number } }) => ({
-      name: c.data.display_name,
-      title: `r/${c.data.display_name}`,
-      subscribers: c.data.subscribers || 0,
+    const res = await fetch(url, { headers: { Accept: "application/json" } });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data.hits ?? []).map((h: Record<string, unknown>) => ({
+      objectID: String(h.objectID ?? ""),
+      comment_text: typeof h.comment_text === "string" ? h.comment_text : null,
+      author: String(h.author ?? ""),
     }));
-  } catch {
-    // Fall back to filtering popular list
-    return POPULAR_SUBREDDITS.filter(
-      (s) =>
-        s.name.toLowerCase().includes(query.toLowerCase()) ||
-        s.title.toLowerCase().includes(query.toLowerCase())
-    ).slice(0, 6);
-  }
+  } catch { return []; }
 }
 
-// ─── Utility ──────────────────────────────────────────────────────────────────
-
-function formatNumber(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`;
-  return String(n);
+async function fetchTrendingHNPosts(): Promise<HNPost[]> {
+  const url = `${HN_API}/search_by_date?tags=ask_hn&hitsPerPage=50&numericFilters=num_comments%3E10`;
+  const res = await fetch(url, { headers: { Accept: "application/json" } });
+  if (!res.ok) throw new Error(`HN API returned ${res.status}`);
+  const data = await res.json();
+  const posts: HNPost[] = (data.hits ?? []).map((h: Record<string, unknown>) => ({
+    objectID: String(h.objectID ?? ""),
+    title: String(h.title ?? ""),
+    num_comments: Number(h.num_comments ?? 0),
+    points: Number(h.points ?? 0),
+    author: String(h.author ?? ""),
+  }));
+  return posts.sort((a, b) => b.num_comments - a.num_comments).slice(0, 5);
 }
 
-function getSubredditInitial(name: string): string {
-  return name.slice(0, 2).toUpperCase();
-}
+// ─── Trending HN Chart ────────────────────────────────────────────────────────
 
-// ─── Components ───────────────────────────────────────────────────────────────
-
-function LandingSection({ onStart }: { onStart: () => void }) {
-  return (
-    <section className="landing animate-fade-in">
-      <div className="landing-bg" />
-      <div className="landing-grid" />
-      <div className="landing-content">
-        <div className="logo-badge">
-          <div className="logo-dot" />
-          Pain Point Intelligence
-        </div>
-        <h1>
-          Discover what people are<br />
-          <span className="gradient-text">screaming about</span>
-        </h1>
-        <p className="landing-subtitle">
-          <strong>ProblemPulse</strong> scans Reddit communities in real time,
-          extracts pain point phrases, and visualises the most burning problems
-          in your chosen communities — instantly.
-        </p>
-        <button className="btn-primary" onClick={onStart}>
-          Get Started
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-            <path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
-        </button>
-        <div className="landing-stats">
-          <div className="stat">
-            <div className="stat-value">Free</div>
-            <div className="stat-label">No cost, ever</div>
-          </div>
-          <div className="stat">
-            <div className="stat-value">Real-time</div>
-            <div className="stat-label">Live Reddit data</div>
-          </div>
-          <div className="stat">
-            <div className="stat-value">NLP</div>
-            <div className="stat-label">Semantic grouping</div>
-          </div>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-// ─── Trending subreddits (preloaded teaser) ──────────────────────────────────
-
-interface TrendingItem {
-  name: string;
-  count: number;
-  subscribers: number;
-}
-
-async function fetchTrendingSubreddits(): Promise<TrendingItem[]> {
-  const res = await fetch("https://www.reddit.com/r/popular/hot.json?limit=100", {
-    headers: { Accept: "application/json" },
-  });
-  if (!res.ok) throw new Error(`Reddit returned ${res.status}`);
-  const json = await res.json();
-  const posts = json?.data?.children ?? [];
-  const counts = new Map<string, { count: number; subscribers: number }>();
-  for (const p of posts) {
-    const name = p?.data?.subreddit;
-    if (!name) continue;
-    const subs = p?.data?.subreddit_subscribers ?? 0;
-    const existing = counts.get(name);
-    if (existing) existing.count++;
-    else counts.set(name, { count: 1, subscribers: subs });
-  }
-  return Array.from(counts.entries())
-    .map(([name, d]) => ({ name, count: d.count, subscribers: d.subscribers }))
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 5);
-}
-
-function TrendingChart({ onPick }: { onPick: (sub: Subreddit) => void }) {
+function TrendingHNChart() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chartRef = useRef<Chart | null>(null);
-  const [trending, setTrending] = useState<TrendingItem[]>([]);
+  const [posts, setPosts] = useState<HNPost[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
@@ -492,33 +417,30 @@ function TrendingChart({ onPick }: { onPick: (sub: Subreddit) => void }) {
     let cancelled = false;
     (async () => {
       try {
-        const data = await fetchTrendingSubreddits();
-        if (!cancelled) {
-          setTrending(data);
-          setLoading(false);
-        }
+        const data = await fetchTrendingHNPosts();
+        if (!cancelled) { setPosts(data); setLoading(false); }
       } catch {
-        if (!cancelled) {
-          setError(true);
-          setLoading(false);
-        }
+        if (!cancelled) { setError(true); setLoading(false); }
       }
     })();
     return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
-    if (!canvasRef.current || trending.length === 0) return;
+    if (!canvasRef.current || posts.length === 0) return;
     chartRef.current?.destroy();
     const colors = ["#7c3aed", "#06b6d4", "#10b981", "#f59e0b", "#ef4444"];
+    const labels = posts.map((p) =>
+      p.title.length > 42 ? p.title.slice(0, 40) + "…" : p.title
+    );
     chartRef.current = new Chart(canvasRef.current, {
       type: "bar",
       data: {
-        labels: trending.map((t) => `r/${t.name}`),
+        labels,
         datasets: [{
-          label: "Posts on Reddit's front page right now",
-          data: trending.map((t) => t.count),
-          backgroundColor: colors.slice(0, trending.length),
+          label: "Comments",
+          data: posts.map((p) => p.num_comments),
+          backgroundColor: colors.slice(0, posts.length),
           borderRadius: 6,
           borderSkipped: false,
         }],
@@ -537,7 +459,7 @@ function TrendingChart({ onPick }: { onPick: (sub: Subreddit) => void }) {
             borderWidth: 1,
             padding: 10,
             callbacks: {
-              label: (ctx) => `${ctx.parsed.x} posts on front page`,
+              label: (ctx) => `${ctx.parsed.x} comments · ${posts[ctx.dataIndex]?.points ?? 0} points`,
             },
           },
         },
@@ -548,13 +470,13 @@ function TrendingChart({ onPick }: { onPick: (sub: Subreddit) => void }) {
           },
           y: {
             grid: { display: false },
-            ticks: { color: "#f0f0f8", font: { size: 13, weight: 600 } },
+            ticks: { color: "#f0f0f8", font: { size: 12, weight: 600 } },
           },
         },
       },
     });
     return () => { chartRef.current?.destroy(); };
-  }, [trending]);
+  }, [posts]);
 
   if (error) return null;
 
@@ -566,197 +488,135 @@ function TrendingChart({ onPick }: { onPick: (sub: Subreddit) => void }) {
           <span className="pulse-text">LIVE</span>
         </div>
         <div>
-          <div className="trending-title">Trending on Reddit right now</div>
-          <div className="trending-sub">Top 5 communities buzzing on the front page · click any to add it to your scan</div>
+          <div className="trending-title">Hottest Ask HN threads right now</div>
+          <div className="trending-sub">Top 5 recent discussions by comment volume — where people are most actively complaining</div>
         </div>
       </div>
       {loading ? (
         <div className="trending-loader">
           <div className="trending-spinner" />
-          Loading live data from Reddit…
+          Fetching live HN data…
         </div>
       ) : (
-        <>
-          <div className="trending-chart-wrap">
-            <canvas ref={canvasRef} />
-          </div>
-          <div className="trending-pills">
-            {trending.map((t) => (
-              <button
-                key={t.name}
-                className="trending-pill"
-                onClick={() => onPick({ name: t.name, title: `r/${t.name}`, subscribers: t.subscribers })}
-                title={`${t.subscribers.toLocaleString()} subscribers`}
-              >
-                <span className="trending-pill-plus">+</span>
-                r/{t.name}
-              </button>
-            ))}
-          </div>
-        </>
+        <div className="trending-chart-wrap">
+          <canvas ref={canvasRef} />
+        </div>
       )}
     </div>
   );
 }
 
+// ─── Onboarding Section ───────────────────────────────────────────────────────
+
 function OnboardingSection({
   onAnalyse,
 }: {
-  onAnalyse: (subreddits: Subreddit[]) => void;
+  onAnalyse: (topics: HNTopic[], sortBy: "recent" | "popular") => void;
 }) {
-  const [query, setQuery] = useState("");
-  const [results, setResults] = useState<Subreddit[]>([]);
-  const [selected, setSelected] = useState<Subreddit[]>([]);
-  const [searching, setSearching] = useState(false);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
+  const [selected, setSelected] = useState<HNTopic[]>([]);
+  const [sortBy, setSortBy] = useState<"recent" | "popular">("recent");
   const MAX = 5;
 
-  useEffect(() => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    if (!query.trim()) {
-      setResults(POPULAR_SUBREDDITS.slice(0, 8));
-      return;
-    }
-    setSearching(true);
-    debounceRef.current = setTimeout(async () => {
-      const found = await searchSubreddits(query);
-      setResults(found.filter((r) => !selected.some((s) => s.name === r.name)));
-      setSearching(false);
-    }, 350);
-    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
-  }, [query, selected]);
-
-  const toggle = (sub: Subreddit) => {
+  const toggle = (topic: HNTopic) => {
     setSelected((prev) => {
-      if (prev.some((s) => s.name === sub.name)) {
-        return prev.filter((s) => s.name !== sub.name);
-      }
+      if (prev.some((t) => t.id === topic.id)) return prev.filter((t) => t.id !== topic.id);
       if (prev.length >= MAX) return prev;
-      return [...prev, sub];
+      return [...prev, topic];
     });
   };
 
-  const isSelected = (sub: Subreddit) => selected.some((s) => s.name === sub.name);
-
-  const handlePick = (sub: Subreddit) => {
-    setSelected((prev) => {
-      if (prev.some((s) => s.name === sub.name)) return prev;
-      if (prev.length >= MAX) return prev;
-      return [...prev, sub];
-    });
-  };
+  const isSelected = (topic: HNTopic) => selected.some((t) => t.id === topic.id);
 
   return (
     <section className="onboarding animate-fade-in">
-      <TrendingChart onPick={handlePick} />
+      <TrendingHNChart />
       <div className="onboarding-card">
         <div className="section-label">
           <div className="section-label-dot" />
-          Step 1 of 2 — Choose Communities
+          Step 1 of 2 — Choose Topics
         </div>
-        <h2>Which Reddit communities matter to you?</h2>
+        <h2>Which topics do you want to scan?</h2>
         <p className="onboarding-desc">
-          Pick up to {MAX} subreddits. We'll scan their top posts and surface the most
-          common pain points.
+          Pick up to {MAX} categories. We'll scan recent Ask HN threads and surface
+          the most common pain points from the comments.
         </p>
 
-        <div className="search-wrapper">
-          <svg className="search-icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
-            <circle cx="7" cy="7" r="5" stroke="currentColor" strokeWidth="1.5"/>
-            <path d="M11 11l3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-          </svg>
-          <input
-            className="search-input"
-            type="text"
-            placeholder="Search subreddits… e.g. 'SaaS', 'fitness'"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
+        <div className="sort-toggle-row">
+          <span className="sort-label">Sort posts by:</span>
+          <div className="sort-toggle">
+            <button
+              className={`sort-btn ${sortBy === "recent" ? "active" : ""}`}
+              onClick={() => setSortBy("recent")}
+            >
+              📅 Recent
+            </button>
+            <button
+              className={`sort-btn ${sortBy === "popular" ? "active" : ""}`}
+              onClick={() => setSortBy("popular")}
+            >
+              🔥 Popular
+            </button>
+          </div>
         </div>
 
-        {results.length > 0 && (
-          <div className="search-results">
-            {searching && (
-              <div className="search-result-item" style={{ justifyContent: "center", color: "var(--text-muted)", fontSize: 13 }}>
-                Searching…
-              </div>
-            )}
-            {!searching && results.map((sub) => (
-              <button
-                key={sub.name}
-                className="search-result-item"
-                onClick={() => toggle(sub)}
-                style={{ width: "100%", textAlign: "left", background: "transparent" }}
-                disabled={!isSelected(sub) && selected.length >= MAX}
-              >
-                <div className="subreddit-icon">{getSubredditInitial(sub.name)}</div>
-                <div>
-                  <div className="subreddit-name">{sub.title}</div>
-                  {sub.subscribers > 0 && (
-                    <div className="subreddit-meta">{formatNumber(sub.subscribers)} members</div>
-                  )}
-                </div>
-                {isSelected(sub) && (
-                  <svg className="check-icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
-                    <path d="M3 8l4 4 6-7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                )}
-              </button>
-            ))}
+        <div className="topic-grid">
+          {HN_TOPICS.map((topic) => (
+            <button
+              key={topic.id}
+              className={`topic-chip ${isSelected(topic) ? "selected" : ""} ${selected.length >= MAX && !isSelected(topic) ? "disabled" : ""}`}
+              onClick={() => toggle(topic)}
+              disabled={selected.length >= MAX && !isSelected(topic)}
+            >
+              <span className="topic-icon">{topic.icon}</span>
+              <span className="topic-label">{topic.label}</span>
+              {isSelected(topic) && <span className="topic-check">✓</span>}
+            </button>
+          ))}
+        </div>
+
+        {selected.length > 0 && (
+          <div className="selected-topics">
+            <div className="selected-label">Selected ({selected.length}/{MAX}):</div>
+            <div className="selected-chips">
+              {selected.map((t) => (
+                <span key={t.id} className="selected-chip">
+                  {t.icon} {t.label}
+                  <button className="chip-remove" onClick={() => toggle(t)} aria-label={`Remove ${t.label}`}>×</button>
+                </span>
+              ))}
+            </div>
           </div>
         )}
 
-        <div className="count-indicator">
-          <span className="count-text">
-            {selected.length === 0
-              ? "No communities selected yet"
-              : `${selected.length} of ${MAX} selected`}
-          </span>
-          <div className="count-badges">
-            {Array.from({ length: MAX }).map((_, i) => (
-              <div key={i} className={`count-badge ${i < selected.length ? "filled" : ""}`} />
-            ))}
-          </div>
-        </div>
-
-        <div className="selected-pills">
-          {selected.length === 0 ? (
-            <span className="empty-selection">Your selected communities will appear here</span>
-          ) : (
-            selected.map((sub) => (
-              <div key={sub.name} className="pill">
-                {sub.title}
-                <button className="pill-remove" onClick={() => toggle(sub)} aria-label={`Remove ${sub.title}`}>
-                  ✕
-                </button>
-              </div>
-            ))
-          )}
-        </div>
-
         <button
-          className="btn-analyze"
+          className="btn-primary"
+          style={{ width: "100%", marginTop: 24, justifyContent: "center" }}
+          onClick={() => onAnalyse(selected, sortBy)}
           disabled={selected.length === 0}
-          onClick={() => onAnalyse(selected)}
         >
+          Scan for pain points
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-            <path d="M2 12l4-4 3 3 5-6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+            <path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
           </svg>
-          Analyse Pain Points
         </button>
+
+        <div style={{ textAlign: "center", marginTop: 12, fontSize: 12, color: "var(--text-muted)" }}>
+          Powered by the Hacker News Algolia API · no login required
+        </div>
       </div>
     </section>
   );
 }
 
+// ─── Loading Section ──────────────────────────────────────────────────────────
+
 function LoadingSection({ steps }: { steps: LoadingStep[] }) {
   return (
     <section className="loading-screen animate-fade-in">
       <div className="loading-spinner" />
-      <div className="loading-title">Scanning communities…</div>
+      <div className="loading-title">Scanning Hacker News…</div>
       <div className="loading-subtitle">
-        Fetching posts, extracting pain signals, and grouping similar complaints.
+        Fetching Ask HN threads, scanning comments for pain signals, and grouping similar problems.
       </div>
       <div className="loading-steps">
         {steps.map((step, i) => (
@@ -771,6 +631,8 @@ function LoadingSection({ steps }: { steps: LoadingStep[] }) {
     </section>
   );
 }
+
+// ─── Bar chart ────────────────────────────────────────────────────────────────
 
 function BarChart({ data }: { data: PainPoint[] }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -790,31 +652,20 @@ function BarChart({ data }: { data: PainPoint[] }) {
       type: "bar",
       data: {
         labels,
-        datasets: [
-          {
-            label: "Mentions",
-            data: counts,
-            backgroundColor: counts.map((c) => {
-              const opacity = 0.5 + (c / maxCount) * 0.5;
-              return `rgba(124, 58, 237, ${opacity})`;
-            }),
-            borderColor: counts.map((c) => {
-              const opacity = 0.6 + (c / maxCount) * 0.4;
-              return `rgba(124, 58, 237, ${opacity})`;
-            }),
-            borderWidth: 1,
-            borderRadius: 6,
-            borderSkipped: false,
-          },
-        ],
+        datasets: [{
+          label: "Mentions",
+          data: counts,
+          backgroundColor: counts.map((c) => `rgba(124, 58, 237, ${0.5 + (c / maxCount) * 0.5})`),
+          borderColor: counts.map((c) => `rgba(124, 58, 237, ${0.6 + (c / maxCount) * 0.4})`),
+          borderWidth: 1,
+          borderRadius: 6,
+          borderSkipped: false,
+        }],
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        animation: {
-          duration: 800,
-          easing: "easeOutQuart",
-        },
+        animation: { duration: 800, easing: "easeOutQuart" },
         plugins: {
           legend: { display: false },
           tooltip: {
@@ -825,11 +676,8 @@ function BarChart({ data }: { data: PainPoint[] }) {
             bodyColor: "#8888a8",
             padding: 12,
             callbacks: {
-              title: (items) => {
-                const idx = items[0].dataIndex;
-                return data[idx].phrase;
-              },
-              label: (item) => ` ${item.raw} mention${Number(item.raw) !== 1 ? "s" : ""} across posts`,
+              title: (items) => data[items[0].dataIndex].phrase,
+              label: (item) => ` ${item.raw} mention${Number(item.raw) !== 1 ? "s" : ""} across comments`,
             },
           },
         },
@@ -837,46 +685,31 @@ function BarChart({ data }: { data: PainPoint[] }) {
           x: {
             grid: { display: false },
             border: { display: false },
-            ticks: {
-              color: "#8888a8",
-              font: { size: 11, family: "Inter" },
-              maxRotation: 20,
-            },
+            ticks: { color: "#8888a8", font: { size: 11, family: "Inter" }, maxRotation: 20 },
           },
           y: {
-            grid: {
-              color: "#1e1e28",
-            },
+            grid: { color: "#1e1e28" },
             border: { display: false },
-            ticks: {
-              color: "#8888a8",
-              font: { size: 11, family: "Inter" },
-              stepSize: 1,
-            },
+            ticks: { color: "#8888a8", font: { size: 11, family: "Inter" }, stepSize: 1 },
           },
         },
       },
     });
 
-    return () => {
-      chartRef.current?.destroy();
-      chartRef.current = null;
-    };
+    return () => { chartRef.current?.destroy(); chartRef.current = null; };
   }, [data]);
 
-  return (
-    <div className="chart-container">
-      <canvas ref={canvasRef} />
-    </div>
-  );
+  return <div className="chart-container"><canvas ref={canvasRef} /></div>;
 }
+
+// ─── Email modal ──────────────────────────────────────────────────────────────
 
 interface EmailModalProps {
   onClose: () => void;
-  subreddits: Subreddit[];
+  topics: HNTopic[];
 }
 
-function EmailModal({ onClose, subreddits }: EmailModalProps) {
+function EmailModal({ onClose, topics }: EmailModalProps) {
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
   const [done, setDone] = useState(false);
@@ -885,33 +718,18 @@ function EmailModal({ onClose, subreddits }: EmailModalProps) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email.includes("@")) {
-      setError("Please enter a valid email address.");
-      return;
-    }
-    if (!marketingConsent) {
-      setError("Please tick the consent box to continue.");
-      return;
-    }
+    if (!email.includes("@")) { setError("Please enter a valid email address."); return; }
+    if (!marketingConsent) { setError("Please tick the consent box to continue."); return; }
     setLoading(true);
     setError("");
-
     try {
-      // Using Formspree — user should replace FORM_ID with their own
-      const FORMSPREE_ENDPOINT = "https://formspree.io/f/xzdyepba";
-      const res = await fetch(FORMSPREE_ENDPOINT, {
+      const res = await fetch("https://formspree.io/f/xzdyepba", {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({
-          email,
-          subreddits: subreddits.map((s) => s.name).join(", "),
-        }),
+        body: JSON.stringify({ email, topics: topics.map((t) => t.label).join(", ") }),
       });
-      if (res.ok) {
-        setDone(true);
-      } else {
-        setError("Something went wrong. Please try again.");
-      }
+      if (res.ok) setDone(true);
+      else setError("Something went wrong. Please try again.");
     } catch {
       setError("Network error. Please try again.");
     } finally {
@@ -923,13 +741,12 @@ function EmailModal({ onClose, subreddits }: EmailModalProps) {
     <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
       <div className="modal animate-fade-in-scale" role="dialog" aria-modal="true">
         <button className="modal-close" onClick={onClose} aria-label="Close">✕</button>
-
         {done ? (
           <div className="modal-success">
             <div className="success-icon">🎉</div>
             <h3>You're on the list!</h3>
             <p className="modal-desc" style={{ marginTop: 8, marginBottom: 0 }}>
-              We'll send daily pain point summaries for your chosen communities straight to your inbox.
+              We'll send daily pain point summaries for your chosen topics straight to your inbox.
             </p>
           </div>
         ) : (
@@ -937,15 +754,11 @@ function EmailModal({ onClose, subreddits }: EmailModalProps) {
             <div className="modal-icon">📬</div>
             <h3>Save your feed &amp; get daily updates</h3>
             <p className="modal-desc">
-              Get a daily digest of the top pain points in{" "}
-              {subreddits.map((s) => s.title).join(", ")} — delivered to your inbox, free.
+              Get a daily digest of the top pain points from{" "}
+              {topics.map((t) => t.label).join(", ")} — delivered to your inbox, free.
             </p>
             <div className="modal-perks">
-              {[
-                "Daily top-5 pain point digest",
-                "Trend alerts when a phrase spikes",
-                "No spam, unsubscribe anytime",
-              ].map((perk) => (
+              {["Daily top-5 pain point digest", "Trend alerts when a problem spikes", "No spam, unsubscribe anytime"].map((perk) => (
                 <div key={perk} className="perk">
                   <div className="perk-dot" />
                   {perk}
@@ -974,20 +787,13 @@ function EmailModal({ onClose, subreddits }: EmailModalProps) {
                   <button
                     type="button"
                     className="inline-link"
-                    onClick={() => {
-                      onClose();
-                      setTimeout(() => {
-                        document.dispatchEvent(new CustomEvent("pp:showPrivacy"));
-                      }, 100);
-                    }}
+                    onClick={() => { onClose(); setTimeout(() => document.dispatchEvent(new CustomEvent("pp:showPrivacy")), 100); }}
                   >
                     Privacy Policy
                   </button>.
                 </span>
               </label>
-              {error && (
-                <div style={{ fontSize: 13, color: "var(--danger)" }}>{error}</div>
-              )}
+              {error && <div style={{ fontSize: 13, color: "var(--danger)" }}>{error}</div>}
               <button className="btn-submit" type="submit" disabled={loading || !marketingConsent}>
                 {loading ? (
                   <>
@@ -1013,25 +819,22 @@ function EmailModal({ onClose, subreddits }: EmailModalProps) {
 
 // ─── Report generator ─────────────────────────────────────────────────────────
 
-function generateReportHTML(
-  painPoints: PainPoint[],
-  subreddits: Subreddit[],
-  totalPosts: number
-): string {
-  const date = new Date().toLocaleDateString("en-GB", {
-    day: "numeric", month: "long", year: "numeric",
-  });
-  const time = new Date().toLocaleTimeString("en-GB", {
-    hour: "2-digit", minute: "2-digit",
-  });
+function escapeHtml(str: string): string {
+  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+}
+
+function generateReportHTML(painPoints: PainPoint[], topics: HNTopic[], totalComments: number): string {
+  const date = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
+  const time = new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
   const maxCount = painPoints[0]?.count ?? 1;
   const COLORS = ["#7c3aed", "#06b6d4", "#10b981", "#f59e0b", "#ef4444"];
 
   const painRows = painPoints.map((p, i) => {
     const pct = Math.round((p.count / maxCount) * 100);
-    const samplePosts = p.posts.slice(0, 3);
-    const postsHtml = samplePosts.map(post =>
-      `<li class="sample-post">"${escapeHtml(post)}"</li>`
+    const evidenceSamples = p.evidence.slice(0, 2);
+    const evHtml = evidenceSamples.map((ev) =>
+      `<li class="sample-post">"${escapeHtml(ev.slice(0, 180))}${ev.length > 180 ? "…" : ""}"</li>`
     ).join("");
 
     return `
@@ -1040,20 +843,16 @@ function generateReportHTML(
           <span class="pain-rank" style="background:${COLORS[i]}22;color:${COLORS[i]}">#${i + 1}</span>
           <span class="pain-phrase">${escapeHtml(p.phrase)}</span>
           <span class="pain-count">${p.count} mention${p.count !== 1 ? "s" : ""}</span>
+          ${p.noSolution ? `<span class="no-solution-badge">No obvious solution</span>` : ""}
         </div>
-        <div class="bar-track">
-          <div class="bar-fill" style="width:${pct}%;background:${COLORS[i]}"></div>
-        </div>
-        ${samplePosts.length > 0 ? `
-        <div class="sample-label">Example posts:</div>
-        <ul class="sample-list">${postsHtml}</ul>
-        ` : ""}
+        <div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${COLORS[i]}"></div></div>
+        ${evidenceSamples.length > 0 ? `
+        <div class="sample-label">Evidence from comments:</div>
+        <ul class="sample-list">${evHtml}</ul>` : ""}
       </div>`;
   }).join("");
 
-  const subredditChips = subreddits.map(s =>
-    `<span class="chip">${escapeHtml(s.title)}</span>`
-  ).join("");
+  const topicChips = topics.map((t) => `<span class="chip">${escapeHtml(t.icon)} ${escapeHtml(t.label)}</span>`).join("");
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -1067,57 +866,40 @@ function generateReportHTML(
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
   body{font-family:'Inter',sans-serif;background:#0a0a0f;color:#f0f0f8;padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}
   .page{max-width:780px;margin:0 auto;padding:48px 40px}
-  /* Header */
   .header{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:40px;padding-bottom:28px;border-bottom:1px solid #2a2a35}
   .logo{display:flex;align-items:center;gap:10px}
   .logo-dot{width:10px;height:10px;border-radius:50%;background:#7c3aed;flex-shrink:0}
   .logo-name{font-size:20px;font-weight:800;letter-spacing:-0.02em;color:#f0f0f8}
   .logo-tag{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.1em;color:#7c3aed;margin-top:2px}
   .meta{text-align:right;font-size:12px;color:#55556a;line-height:1.7}
-  /* Hero */
   .hero{margin-bottom:36px}
   .hero h1{font-size:30px;font-weight:900;letter-spacing:-0.025em;color:#f0f0f8;line-height:1.15;margin-bottom:10px}
   .hero h1 span{color:#a78bfa}
   .hero-sub{font-size:14px;color:#8888a8;line-height:1.6;max-width:520px}
-  /* Communities */
   .section-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.1em;color:#55556a;margin-bottom:12px}
   .chips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:32px}
   .chip{background:#18181f;border:1px solid #2a2a35;border-radius:100px;padding:5px 13px;font-size:12px;font-weight:500;color:#8888a8}
-  /* Stats row */
   .stats-row{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:36px}
   .stat-card{background:#111118;border:1px solid #2a2a35;border-radius:12px;padding:18px 20px}
   .stat-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.1em;color:#55556a;margin-bottom:6px}
   .stat-value{font-size:24px;font-weight:800;letter-spacing:-0.02em;color:#f0f0f8}
   .stat-sub{font-size:11px;color:#55556a;margin-top:2px}
-  /* Pain blocks */
   .pain-blocks{display:flex;flex-direction:column;gap:20px;margin-bottom:40px}
   .pain-block{background:#111118;border:1px solid #2a2a35;border-radius:12px;padding:20px 22px}
-  .pain-header{display:flex;align-items:center;gap:12px;margin-bottom:12px}
+  .pain-header{display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap}
   .pain-rank{font-size:11px;font-weight:700;border-radius:6px;padding:3px 8px;flex-shrink:0}
   .pain-phrase{font-size:15px;font-weight:700;color:#f0f0f8;flex:1;line-height:1.3}
   .pain-count{font-size:12px;font-weight:600;color:#55556a;white-space:nowrap}
+  .no-solution-badge{font-size:10px;font-weight:700;background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.3);color:#ef4444;border-radius:4px;padding:2px 6px}
   .bar-track{height:5px;background:#1e1e28;border-radius:3px;overflow:hidden;margin-bottom:14px}
-  .bar-fill{height:100%;border-radius:3px;transition:width 0.5s}
+  .bar-fill{height:100%;border-radius:3px}
   .sample-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;color:#55556a;margin-bottom:8px}
   .sample-list{list-style:none;display:flex;flex-direction:column;gap:6px}
   .sample-post{font-size:12px;color:#8888a8;line-height:1.5;padding-left:12px;border-left:2px solid #2a2a35;font-style:italic}
-  /* Footer */
   .footer{border-top:1px solid #2a2a35;padding-top:24px;display:flex;align-items:center;justify-content:space-between}
   .footer-left{font-size:12px;color:#55556a;line-height:1.6}
   .footer-brand{font-size:11px;font-weight:700;color:#7c3aed;text-decoration:none}
-  /* Print */
-  @media print{
-    body{background:#fff;color:#111}
-    .header,.pain-block,.stat-card{border-color:#e5e7eb}
-    .stat-card,.pain-block{background:#f9fafb}
-    .pain-phrase,.stat-value,.hero h1{color:#111}
-    .stat-label,.stat-sub,.section-title,.sample-label,.footer-left,.pain-count,.meta{color:#6b7280}
-    .chip{background:#f3f4f6;border-color:#e5e7eb;color:#374151}
-    .bar-track{background:#e5e7eb}
-    .sample-post{color:#374151;border-color:#d1d5db}
-    .footer{border-color:#e5e7eb}
-    .logo-name{color:#111}
-  }
+  @media print{body{background:#fff;color:#111}.header,.pain-block,.stat-card{border-color:#e5e7eb}.stat-card,.pain-block{background:#f9fafb}.pain-phrase,.stat-value,.hero h1{color:#111}.stat-label,.stat-sub,.section-title,.sample-label,.footer-left,.pain-count,.meta{color:#6b7280}.chip{background:#f3f4f6;border-color:#e5e7eb;color:#374151}.bar-track{background:#e5e7eb}.sample-post{color:#374151;border-color:#d1d5db}.footer{border-color:#e5e7eb}.logo-name{color:#111}}
 </style>
 </head>
 <body>
@@ -1130,28 +912,19 @@ function generateReportHTML(
         <div class="logo-tag">Pain Point Intelligence</div>
       </div>
     </div>
-    <div class="meta">
-      Generated ${date} at ${time}<br/>
-      ${subreddits.length} communit${subreddits.length === 1 ? "y" : "ies"} · ${totalPosts.toLocaleString()} posts scanned
-    </div>
+    <div class="meta">Generated ${date} at ${time}<br/>${topics.length} topic${topics.length !== 1 ? "s" : ""} · ${totalComments.toLocaleString()} comments scanned</div>
   </div>
-
   <div class="hero">
     <h1>Top <span>${painPoints.length} Pain Points</span> Right Now</h1>
-    <p class="hero-sub">
-      Real problems extracted from Reddit using NLP and semantic grouping.
-      Each phrase represents a cluster of similar complaints from real users.
-    </p>
+    <p class="hero-sub">Real problems extracted from Hacker News Ask HN threads using NLP and semantic grouping. Each phrase represents a cluster of similar complaints from real people.</p>
   </div>
-
-  <div class="section-title">Communities Analysed</div>
-  <div class="chips">${subredditChips}</div>
-
+  <div class="section-title">Topics Analysed</div>
+  <div class="chips">${topicChips}</div>
   <div class="stats-row">
     <div class="stat-card">
-      <div class="stat-label">Posts Scanned</div>
-      <div class="stat-value">${totalPosts.toLocaleString()}</div>
-      <div class="stat-sub">across ${subreddits.length} subreddit${subreddits.length !== 1 ? "s" : ""}</div>
+      <div class="stat-label">Comments Scanned</div>
+      <div class="stat-value">${totalComments.toLocaleString()}</div>
+      <div class="stat-sub">across ${topics.length} topic${topics.length !== 1 ? "s" : ""}</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Pain Points Found</div>
@@ -1164,43 +937,25 @@ function generateReportHTML(
       <div class="stat-sub">${painPoints[0]?.count ?? 0} mentions</div>
     </div>
   </div>
-
   <div class="section-title">Pain Point Breakdown</div>
   <div class="pain-blocks">${painRows}</div>
-
   <div class="footer">
-    <div class="footer-left">
-      Data sourced from Reddit's public API · Analysis by NLP phrase extraction &amp; semantic clustering<br/>
-      This report reflects content from the time of generation and may not reflect current trends.
-    </div>
-    <a class="footer-brand" href="https://problempulse.app">ProblemPulse</a>
+    <div class="footer-left">Data sourced from Hacker News via Algolia API · Analysis by NLP phrase extraction &amp; semantic clustering<br/>This report reflects content from the time of generation and may not reflect current trends.</div>
+    <a class="footer-brand" href="#">ProblemPulse</a>
   </div>
 </div>
 </body>
 </html>`;
 }
 
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
-
-function downloadReport(
-  painPoints: PainPoint[],
-  subreddits: Subreddit[],
-  totalPosts: number
-) {
-  const html = generateReportHTML(painPoints, subreddits, totalPosts);
+function downloadReport(painPoints: PainPoint[], topics: HNTopic[], totalComments: number) {
+  const html = generateReportHTML(painPoints, topics, totalComments);
   const blob = new Blob([html], { type: "text/html;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   const dateStr = new Date().toISOString().slice(0, 10);
   a.href = url;
-  a.download = `problempulse-report-${dateStr}.html`;
+  a.download = `problempulse-hn-report-${dateStr}.html`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -1211,25 +966,23 @@ function downloadReport(
 
 function ResultsSection({
   painPoints,
-  subreddits,
-  totalPosts,
+  topics,
+  totalComments,
   onRestart,
 }: {
   painPoints: PainPoint[];
-  subreddits: Subreddit[];
-  totalPosts: number;
+  topics: HNTopic[];
+  totalComments: number;
   onRestart: () => void;
 }) {
   const [showModal, setShowModal] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [expandedEvidence, setExpandedEvidence] = useState<Set<number>>(new Set());
   const maxCount = painPoints[0]?.count ?? 1;
 
   const handleDownload = () => {
     setDownloading(true);
-    setTimeout(() => {
-      downloadReport(painPoints, subreddits, totalPosts);
-      setDownloading(false);
-    }, 50);
+    setTimeout(() => { downloadReport(painPoints, topics, totalComments); setDownloading(false); }, 50);
   };
 
   useEffect(() => {
@@ -1237,27 +990,37 @@ function ResultsSection({
     return () => clearTimeout(timer);
   }, []);
 
+  const toggleEvidence = (i: number) => {
+    setExpandedEvidence((prev) => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i); else next.add(i);
+      return next;
+    });
+  };
+
+  const COLORS = ["#7c3aed", "#06b6d4", "#10b981", "#f59e0b", "#ef4444"];
+
   return (
     <>
       <section className="results animate-fade-in">
         <div className="results-header">
           <div className="results-meta">
-            <span className="meta-chip accent">Live Reddit Data</span>
-            {subreddits.map((s) => (
-              <span key={s.name} className="meta-chip">{s.title}</span>
+            <span className="meta-chip accent">Live HN Data</span>
+            {topics.map((t) => (
+              <span key={t.id} className="meta-chip">{t.icon} {t.label}</span>
             ))}
           </div>
           <h2>Top pain points right now</h2>
           <p className="results-sub">
-            Extracted and semantically grouped from {totalPosts.toLocaleString()} posts
+            Extracted from {totalComments.toLocaleString()} HN comments · NLP + semantic grouping
           </p>
         </div>
 
         <div className="results-grid">
           <div className="stat-card">
-            <div className="stat-card-label">Posts Scanned</div>
-            <div className="stat-card-value">{totalPosts.toLocaleString()}</div>
-            <div className="stat-card-sub">across {subreddits.length} communities</div>
+            <div className="stat-card-label">Comments Scanned</div>
+            <div className="stat-card-value">{totalComments.toLocaleString()}</div>
+            <div className="stat-card-sub">across {topics.length} topic{topics.length !== 1 ? "s" : ""}</div>
           </div>
           <div className="stat-card">
             <div className="stat-card-label">Top Pain Phrase</div>
@@ -1272,9 +1035,7 @@ function ResultsSection({
           <div className="chart-card-header">
             <div>
               <div className="chart-card-title">Pain Point Frequency</div>
-              <div className="chart-card-subtitle">
-                Top 5 phrases by mention count, semantically deduplicated
-              </div>
+              <div className="chart-card-subtitle">Top 5 phrases by mention count, semantically deduplicated</div>
             </div>
             <div className="chart-legend">
               <div className="chart-legend-dot" />
@@ -1287,15 +1048,38 @@ function ResultsSection({
         <div className="pain-list">
           {painPoints.map((p, i) => (
             <div key={p.phrase} className="pain-item" style={{ animationDelay: `${i * 80}ms` }}>
-              <div className={`pain-rank ${i < 3 ? "top" : ""}`}>#{i + 1}</div>
-              <div className="pain-bar-wrapper">
-                <div className="pain-phrase">{p.phrase}</div>
-                <div className="pain-bar-track">
-                  <div
-                    className="pain-bar-fill"
-                    style={{ width: `${(p.count / maxCount) * 100}%` }}
-                  />
+              <div className={`pain-rank ${i < 3 ? "top" : ""}`} style={{ color: COLORS[i] }}>#{i + 1}</div>
+              <div className="pain-body">
+                <div className="pain-phrase-row">
+                  <div className="pain-phrase">{p.phrase}</div>
+                  {p.noSolution && (
+                    <span className="no-solution-pill" title="No obvious existing solution mentioned in these threads">
+                      ⚠ No obvious solution
+                    </span>
+                  )}
                 </div>
+                <div className="pain-bar-track">
+                  <div className="pain-bar-fill" style={{ width: `${(p.count / maxCount) * 100}%`, background: COLORS[i] }} />
+                </div>
+                {p.evidence.length > 0 && (
+                  <div className="evidence-section">
+                    <button
+                      className="evidence-toggle"
+                      onClick={() => toggleEvidence(i)}
+                    >
+                      {expandedEvidence.has(i) ? "▲ Hide" : "▼ Show"} {p.evidence.length} source comment{p.evidence.length !== 1 ? "s" : ""}
+                    </button>
+                    {expandedEvidence.has(i) && (
+                      <div className="evidence-list">
+                        {p.evidence.map((ev, j) => (
+                          <div key={j} className="evidence-quote">
+                            "{ev.length > 200 ? ev.slice(0, 200) + "…" : ev}"
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
               <div className="pain-count">
                 {p.count} <span>mentions</span>
@@ -1310,7 +1094,7 @@ function ResultsSection({
               <path d="M2 7a5 5 0 1 0 1-2.9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
               <path d="M2 2v3h3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
-            Analyse different communities
+            Scan different topics
           </button>
           <button
             className="btn-ghost"
@@ -1346,9 +1130,7 @@ function ResultsSection({
         </div>
       </section>
 
-      {showModal && (
-        <EmailModal onClose={() => setShowModal(false)} subreddits={subreddits} />
-      )}
+      {showModal && <EmailModal onClose={() => setShowModal(false)} topics={topics} />}
     </>
   );
 }
@@ -1362,50 +1144,40 @@ function PrivacyPolicyModal({ onClose }: { onClose: () => void }) {
         <button className="modal-close" onClick={onClose} aria-label="Close">✕</button>
         <h3 style={{ marginBottom: 16 }}>Privacy Policy</h3>
         <div className="privacy-body">
-          <p><strong>Last updated:</strong> April 2026</p>
+          <p><strong>Last updated:</strong> June 2026</p>
           <p>ProblemPulse (&ldquo;we&rdquo;, &ldquo;us&rdquo;) is committed to protecting your personal data and complying with the General Data Protection Regulation (GDPR) and UK GDPR.</p>
-
           <h4>1. Who we are</h4>
           <p>ProblemPulse is operated by its owner (&ldquo;the Controller&rdquo;). For data-related queries, contact us via our website.</p>
-
           <h4>2. What data we collect</h4>
           <ul>
             <li><strong>Email address</strong> — only if you voluntarily subscribe to our mailing list. Legal basis: consent (Art. 6(1)(a) GDPR).</li>
-            <li><strong>Usage analytics</strong> — only if you accept cookies. We use Google Analytics 4 with IP anonymisation enabled. This may collect your anonymised IP address, browser type, device type, pages visited, and session duration. Legal basis: consent (Art. 6(1)(a) GDPR).</li>
-            <li><strong>Reddit post titles</strong> — fetched in real-time from Reddit&rsquo;s public API in your browser. This data is not stored on our servers and never leaves your browser session.</li>
+            <li><strong>Usage analytics</strong> — only if you accept cookies. We use Google Analytics 4 with IP anonymisation enabled. Legal basis: consent (Art. 6(1)(a) GDPR).</li>
+            <li><strong>Hacker News comment data</strong> — fetched in real-time from the public Algolia HN API in your browser. This data is not stored on our servers and never leaves your browser session.</li>
           </ul>
-
           <h4>3. How we use your data</h4>
           <ul>
             <li>Email: to send you pain-point digests you signed up for.</li>
             <li>Analytics: to understand how people use ProblemPulse and improve it.</li>
           </ul>
-
           <h4>4. Third-party processors</h4>
           <ul>
             <li><strong>Formspree</strong> — processes email submissions. See <a href="https://formspree.io/legal/privacy-policy" target="_blank" rel="noopener noreferrer">Formspree Privacy Policy</a>.</li>
             <li><strong>Google Analytics</strong> — only activated with your consent. See <a href="https://policies.google.com/privacy" target="_blank" rel="noopener noreferrer">Google Privacy Policy</a>.</li>
-            <li><strong>Reddit</strong> — post titles are fetched from Reddit&rsquo;s public API. See <a href="https://www.reddit.com/policies/privacy-policy" target="_blank" rel="noopener noreferrer">Reddit Privacy Policy</a>.</li>
+            <li><strong>Algolia / Hacker News</strong> — comment data is fetched from the public Algolia HN Search API. See <a href="https://www.algolia.com/policies/privacy/" target="_blank" rel="noopener noreferrer">Algolia Privacy Policy</a>.</li>
           </ul>
-
           <h4>5. Data retention</h4>
-          <p>Email addresses are retained until you unsubscribe. Analytics data is retained per Google Analytics default settings (26 months). We do not store Reddit post content.</p>
-
+          <p>Email addresses are retained until you unsubscribe. Analytics data is retained per Google Analytics default settings (26 months). We do not store Hacker News comment content.</p>
           <h4>6. Your rights</h4>
-          <p>Under GDPR you have the right to: access your data, rectify inaccurate data, erase your data, restrict processing, data portability, and withdraw consent at any time. To exercise these rights, contact us via the website. You also have the right to lodge a complaint with your local data protection authority (e.g. the ICO in the UK).</p>
-
+          <p>Under GDPR you have the right to: access your data, rectify inaccurate data, erase your data, restrict processing, data portability, and withdraw consent at any time. To exercise these rights, contact us via the website.</p>
           <h4>7. Withdrawing consent</h4>
-          <p>You can withdraw cookie consent at any time using the &ldquo;Cookie Settings&rdquo; link in the banner at the bottom of the page. To unsubscribe from emails, use the unsubscribe link in any email we send.</p>
-
+          <p>You can withdraw cookie consent at any time using the &ldquo;Cookie Settings&rdquo; link in the banner. To unsubscribe from emails, use the unsubscribe link in any email we send.</p>
           <h4>8. Cookies</h4>
-          <p><strong>Essential cookies:</strong> We do not use any essential tracking cookies. Your consent preference is stored in your browser&rsquo;s local storage (not a cookie) and is never sent to our servers.</p>
-          <p><strong>Analytics cookies (optional):</strong> Google Analytics sets <code>_ga</code>, <code>_gid</code>, and related cookies to distinguish users and sessions. These are only set after you give consent.</p>
-
+          <p><strong>Essential:</strong> No tracking cookies. Your consent preference is stored in local storage and never sent to our servers.</p>
+          <p><strong>Analytics (optional):</strong> Google Analytics sets <code>_ga</code>, <code>_gid</code>, and related cookies only after you give consent.</p>
           <h4>9. Children</h4>
           <p>ProblemPulse is not directed at children under 16. We do not knowingly collect data from children.</p>
-
           <h4>10. Changes to this policy</h4>
-          <p>We may update this policy. Significant changes will be noted on this page with a revised &ldquo;Last updated&rdquo; date.</p>
+          <p>We may update this policy. Changes will be noted with a revised &ldquo;Last updated&rdquo; date.</p>
         </div>
         <button className="btn-primary" onClick={onClose} style={{ marginTop: 24, width: "100%" }}>Close</button>
       </div>
@@ -1416,10 +1188,7 @@ function PrivacyPolicyModal({ onClose }: { onClose: () => void }) {
 // ─── Cookie Settings Modal ────────────────────────────────────────────────────
 
 function CookieSettingsModal({
-  current,
-  onSave,
-  onClose,
-  onShowPrivacy,
+  current, onSave, onClose, onShowPrivacy,
 }: {
   current: ConsentValue;
   onSave: (v: "accepted" | "declined") => void;
@@ -1435,7 +1204,6 @@ function CookieSettingsModal({
         <div className="modal-icon">🍪</div>
         <h3>Cookie Settings</h3>
         <p className="modal-desc">Manage which cookies ProblemPulse uses. Essential functions always run — they keep the site working and store your preferences locally.</p>
-
         <div className="cookie-toggle-list">
           <div className="cookie-toggle-row">
             <div className="cookie-toggle-info">
@@ -1444,23 +1212,17 @@ function CookieSettingsModal({
             </div>
             <div className="cookie-toggle-always">Always on</div>
           </div>
-
           <div className="cookie-toggle-row">
             <div className="cookie-toggle-info">
               <div className="cookie-toggle-title">Analytics (Google Analytics 4)</div>
-              <div className="cookie-toggle-desc">Helps us understand how visitors use the site. IP anonymisation is enabled. No personal data is shared with advertisers.</div>
+              <div className="cookie-toggle-desc">Helps us understand how visitors use the site. IP anonymisation is enabled.</div>
             </div>
             <label className="toggle-switch" aria-label="Enable analytics cookies">
-              <input
-                type="checkbox"
-                checked={analytics}
-                onChange={(e) => setAnalytics(e.target.checked)}
-              />
+              <input type="checkbox" checked={analytics} onChange={(e) => setAnalytics(e.target.checked)} />
               <span className="toggle-slider" />
             </label>
           </div>
         </div>
-
         <button
           className="btn-primary"
           style={{ marginTop: 20, width: "100%" }}
@@ -1476,12 +1238,7 @@ function CookieSettingsModal({
 
 // ─── Cookie Consent Banner ────────────────────────────────────────────────────
 
-function CookieBanner({
-  onAccept,
-  onDecline,
-  onSettings,
-  onPrivacy,
-}: {
+function CookieBanner({ onAccept, onDecline, onSettings, onPrivacy }: {
   onAccept: () => void;
   onDecline: () => void;
   onSettings: () => void;
@@ -1503,17 +1260,62 @@ function CookieBanner({
   );
 }
 
+// ─── Landing Section ──────────────────────────────────────────────────────────
+
+function LandingSection({ onStart }: { onStart: () => void }) {
+  return (
+    <section className="landing animate-fade-in">
+      <div className="landing-bg" />
+      <div className="landing-grid" />
+      <div className="landing-content">
+        <div className="logo-badge">
+          <div className="logo-dot" />
+          Pain Point Intelligence
+        </div>
+        <h1>
+          Discover what builders are<br />
+          <span className="gradient-text">actually struggling with</span>
+        </h1>
+        <p className="landing-subtitle">
+          <strong>ProblemPulse</strong> scans Hacker News Ask HN threads in real time,
+          extracts pain points from the comments, and visualises the most burning
+          unsolved problems — instantly.
+        </p>
+        <button className="btn-primary" onClick={onStart}>
+          Get Started
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </button>
+        <div className="landing-stats">
+          <div className="stat">
+            <div className="stat-value">Free</div>
+            <div className="stat-label">No cost, ever</div>
+          </div>
+          <div className="stat">
+            <div className="stat-value">Real-time</div>
+            <div className="stat-label">Live HN data</div>
+          </div>
+          <div className="stat">
+            <div className="stat-value">NLP</div>
+            <div className="stat-label">Semantic grouping</div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 // ─── Main App ─────────────────────────────────────────────────────────────────
 
 export default function App() {
   const [phase, setPhase] = useState<Phase>("landing");
-  const [selectedSubreddits, setSelectedSubreddits] = useState<Subreddit[]>([]);
+  const [selectedTopics, setSelectedTopics] = useState<HNTopic[]>([]);
   const [painPoints, setPainPoints] = useState<PainPoint[]>([]);
-  const [totalPosts, setTotalPosts] = useState(0);
+  const [totalComments, setTotalComments] = useState(0);
   const [errorMsg, setErrorMsg] = useState("");
   const [loadingSteps, setLoadingSteps] = useState<LoadingStep[]>([]);
 
-  // ── GDPR consent state ────────────────────────────────────────────────────
   const [consent, setConsent] = useState<ConsentValue>(getStoredConsent);
   const [showCookieSettings, setShowCookieSettings] = useState(false);
   const [showPrivacyPolicy, setShowPrivacyPolicy] = useState(false);
@@ -1530,40 +1332,63 @@ export default function App() {
   const handleSaveSettings = (v: "accepted" | "declined") => { persistConsent(v); setConsent(v); };
 
   const setStepStatus = (index: number, status: LoadingStep["status"]) => {
-    setLoadingSteps((prev) =>
-      prev.map((s, i) => (i === index ? { ...s, status } : s))
-    );
+    setLoadingSteps((prev) => prev.map((s, i) => i === index ? { ...s, status } : s));
   };
 
-  const runAnalysis = useCallback(async (subreddits: Subreddit[]) => {
-    setSelectedSubreddits(subreddits);
+  const runAnalysis = useCallback(async (topics: HNTopic[], sortBy: "recent" | "popular") => {
+    setSelectedTopics(topics);
 
     const steps: LoadingStep[] = [
-      ...subreddits.map((s) => ({ label: `Fetching r/${s.name}`, status: "pending" as const })),
+      ...topics.map((t) => ({ label: `Fetching Ask HN: ${t.label}`, status: "pending" as const })),
+      { label: "Scanning comments for pain keywords", status: "pending" as const },
       { label: "Extracting pain signals via NLP", status: "pending" as const },
-      { label: "Grouping semantically similar phrases", status: "pending" as const },
-      { label: "Rewriting phrases into clear problem statements", status: "pending" as const },
+      { label: "Grouping semantically similar problems", status: "pending" as const },
+      { label: "Rewriting into clear problem statements", status: "pending" as const },
     ];
     setLoadingSteps(steps);
     setPhase("loading");
 
     try {
-      const allTitles: string[] = [];
+      const allTexts: string[] = [];
+      const evidenceMap = new Map<string, string[]>();
 
-      for (let i = 0; i < subreddits.length; i++) {
+      for (let i = 0; i < topics.length; i++) {
         setStepStatus(i, "active");
-        const titles = await fetchSubredditTitles(subreddits[i].name);
-        allTitles.push(...titles);
+
+        const posts = await fetchHNPostsForTopic(topics[i], sortBy);
+        // Add post titles
+        for (const post of posts) {
+          if (post.title) allTexts.push(post.title);
+        }
+        // Fetch comments for top 5 most-discussed posts
+        const topPosts = posts.slice(0, 5);
+        for (const post of topPosts) {
+          const comments = await fetchHNComments(post.objectID);
+          for (const c of comments) {
+            if (!c.comment_text) continue;
+            const clean = stripHtml(c.comment_text);
+            if (clean.length < 20) continue;
+            // Only keep comments with pain keywords
+            if (hasPainKeyword(clean)) {
+              allTexts.push(clean);
+              evidenceMap.set(clean, [clean]);
+            }
+          }
+        }
+
         setStepStatus(i, "done");
       }
 
-      const nlpStepIdx = subreddits.length;
-      const mergeStepIdx = subreddits.length + 1;
-      const rewriteStepIdx = subreddits.length + 2;
+      const filterStepIdx = topics.length;
+      const nlpStepIdx = topics.length + 1;
+      const mergeStepIdx = topics.length + 2;
+      const rewriteStepIdx = topics.length + 3;
+
+      setStepStatus(filterStepIdx, "done");
 
       setStepStatus(nlpStepIdx, "active");
-      await new Promise((r) => setTimeout(r, 200)); // allow UI update
-      const phraseMap = extractPainPhrases(allTitles);
+      await new Promise((r) => setTimeout(r, 200));
+      const phraseMap = extractPainPhrases(allTexts, evidenceMap);
       setStepStatus(nlpStepIdx, "done");
 
       setStepStatus(mergeStepIdx, "active");
@@ -1571,17 +1396,16 @@ export default function App() {
       const merged = mergeSemanticGroups(phraseMap);
       setStepStatus(mergeStepIdx, "done");
 
-      setTotalPosts(allTitles.length);
+      setTotalComments(allTexts.length);
 
       if (merged.length === 0) {
         setErrorMsg(
-          "We didn't find enough pain-point signals in those communities right now. Try subreddits focused on problems, advice, or questions — like r/entrepreneur or r/personalfinance."
+          "We didn't find enough pain-point signals in those topics right now. Try adding more topics or switching to 'Popular' sort to scan posts with higher engagement."
         );
         setPhase("error");
         return;
       }
 
-      // AI rewrite pass — clean up any phrases that aren't clear problem statements
       setStepStatus(rewriteStepIdx, "active");
       let finalPoints = merged;
       try {
@@ -1590,7 +1414,7 @@ export default function App() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             phrases: merged.map((p) => p.phrase),
-            subreddits: subreddits.map((s) => s.name),
+            subreddits: topics.map((t) => t.label),
           }),
         });
         if (rewriteRes.ok) {
@@ -1601,23 +1425,18 @@ export default function App() {
           }));
         }
       } catch {
-        // Fall back to NLP-only phrases if AI is unavailable
+        // Fall back to NLP-only phrases
       }
       setStepStatus(rewriteStepIdx, "done");
 
       setPainPoints(finalPoints);
       await new Promise((r) => setTimeout(r, 400));
       setPhase("results");
+
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Unknown error";
-      if (msg.includes("403")) {
-        setErrorMsg(
-          "Reddit blocked this request. If you're testing inside Replit's preview pane, open the published app directly — Reddit allows requests from real browsers but blocks datacenter IPs. If you're already on the published app, wait 30 seconds and try again."
-        );
-      } else if (msg.includes("CORS") || msg.includes("NetworkError") || msg.includes("Failed to fetch")) {
-        setErrorMsg(
-          "Could not reach Reddit's API. Please make sure you're using the published app URL, not the Replit preview pane, then try again."
-        );
+      if (msg.includes("Failed to fetch") || msg.includes("NetworkError")) {
+        setErrorMsg("Could not reach the Hacker News API. Please check your internet connection and try again.");
       } else {
         setErrorMsg(`Something went wrong: ${msg}`);
       }
@@ -1627,8 +1446,8 @@ export default function App() {
 
   const reset = () => {
     setPainPoints([]);
-    setSelectedSubreddits([]);
-    setTotalPosts(0);
+    setSelectedTopics([]);
+    setTotalComments(0);
     setErrorMsg("");
     setLoadingSteps([]);
     setPhase("onboarding");
@@ -1642,8 +1461,8 @@ export default function App() {
       {phase === "results" && (
         <ResultsSection
           painPoints={painPoints}
-          subreddits={selectedSubreddits}
-          totalPosts={totalPosts}
+          topics={selectedTopics}
+          totalComments={totalComments}
           onRestart={reset}
         />
       )}
@@ -1653,9 +1472,7 @@ export default function App() {
             <div className="error-icon">⚠️</div>
             <div className="error-title">Analysis incomplete</div>
             <div className="error-msg">{errorMsg}</div>
-            <button className="btn-primary" onClick={reset}>
-              Try again
-            </button>
+            <button className="btn-primary" onClick={reset}>Try again</button>
           </div>
         </section>
       )}
@@ -1689,9 +1506,7 @@ export default function App() {
         />
       )}
 
-      {showPrivacyPolicy && (
-        <PrivacyPolicyModal onClose={() => setShowPrivacyPolicy(false)} />
-      )}
+      {showPrivacyPolicy && <PrivacyPolicyModal onClose={() => setShowPrivacyPolicy(false)} />}
     </div>
   );
 }
