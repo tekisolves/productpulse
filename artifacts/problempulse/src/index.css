@@ -13,8 +13,8 @@
   --border: #2a2a35;
   --border-hover: #3d3d4d;
   --text-primary: #f0f0f8;
-  --text-secondary: #8888a8;
-  --text-muted: #55556a;
+  --text-secondary: #a8a8c8;
+  --text-muted: #8080a4;
   --accent: #7c3aed;
   --accent-hover: #6d28d9;
   --accent-glow: rgba(124, 58, 237, 0.25);
@@ -279,8 +279,110 @@ a {
 
 .stat-label {
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   margin-top: 2px;
+}
+
+/* ─── How it works (landing) ─── */
+.how-it-works {
+  position: relative;
+  z-index: 1;
+  margin-top: 60px;
+  width: 100%;
+  max-width: 760px;
+  padding: 0 24px;
+}
+
+.hiw-label {
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-muted);
+  margin-bottom: 24px;
+}
+
+.hiw-steps {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  justify-content: center;
+}
+
+.hiw-step {
+  flex: 1;
+  max-width: 220px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 22px 18px;
+  text-align: center;
+  position: relative;
+}
+
+.hiw-num {
+  position: absolute;
+  top: -10px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  letter-spacing: 0;
+}
+
+.hiw-icon {
+  font-size: 28px;
+  margin-bottom: 10px;
+}
+
+.hiw-step-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+  letter-spacing: -0.01em;
+}
+
+.hiw-step-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.hiw-arrow {
+  font-size: 18px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  margin-top: 40px;
+  padding: 0 4px;
+}
+
+@media (max-width: 640px) {
+  .hiw-steps {
+    flex-direction: column;
+    align-items: center;
+  }
+  .hiw-step {
+    max-width: 100%;
+    width: 100%;
+  }
+  .hiw-arrow {
+    transform: rotate(90deg);
+    margin-top: 0;
+    margin: -2px 0;
+  }
+  .how-it-works {
+    padding: 0 16px;
+  }
 }
 
 /* ─── Onboarding Section ─── */
@@ -365,41 +467,85 @@ a {
   line-height: 1.4;
 }
 
-.trending-chart-wrap {
-  height: 180px;
-  margin-bottom: 14px;
-}
-
-.trending-pills {
+/* ─── HN Feed (replaces chart) ─── */
+.hn-feed {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  flex-direction: column;
+  gap: 0;
 }
 
-.trending-pill {
+.hn-feed-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+  position: relative;
+}
+
+.hn-feed-item:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.hn-feed-item:first-child {
+  padding-top: 0;
+}
+
+.hn-feed-rank {
+  font-size: 15px;
+  font-weight: 900;
+  width: 22px;
+  text-align: center;
+  flex-shrink: 0;
+  letter-spacing: -0.02em;
+}
+
+.hn-feed-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.hn-feed-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.4;
+  margin-bottom: 4px;
+}
+
+.hn-feed-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hn-feed-badge {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  background: rgba(124,58,237,0.1);
-  border: 1px solid rgba(124,58,237,0.3);
-  color: var(--text);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
-  padding: 6px 10px;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: all 0.15s ease;
+  border-radius: 4px;
+  padding: 2px 6px;
 }
 
-.trending-pill:hover {
-  background: rgba(124,58,237,0.2);
-  border-color: rgba(124,58,237,0.5);
-  transform: translateY(-1px);
+.hn-comments {
+  background: rgba(124,58,237,0.12);
+  color: #a78bfa;
 }
 
-.trending-pill-plus {
-  color: #7c3aed;
-  font-weight: 700;
+.hn-points {
+  background: rgba(245,158,11,0.1);
+  color: #fbbf24;
+}
+
+.hn-feed-bar {
+  height: 28px;
+  border-radius: 3px;
+  opacity: 0.35;
+  flex-shrink: 0;
+  transition: width 0.6s ease;
 }
 
 .trending-loader {
@@ -1135,7 +1281,7 @@ a {
 .topic-label {
   font-size: 13px;
   font-weight: 600;
-  color: var(--text);
+  color: var(--text-primary);
   flex: 1;
 }
 
@@ -1175,7 +1321,7 @@ a {
   gap: 4px;
   background: rgba(124,58,237,0.12);
   border: 1px solid rgba(124,58,237,0.3);
-  color: var(--text);
+  color: var(--text-primary);
   font-size: 12px;
   font-weight: 600;
   padding: 4px 8px;

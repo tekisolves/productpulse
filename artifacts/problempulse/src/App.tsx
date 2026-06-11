@@ -404,11 +404,20 @@ async function fetchTrendingHNPosts(): Promise<HNPost[]> {
   return posts.sort((a, b) => b.num_comments - a.num_comments).slice(0, 5);
 }
 
-// ─── Trending HN Chart ────────────────────────────────────────────────────────
+// ─── Clean up Ask HN title ────────────────────────────────────────────────────
 
-function TrendingHNChart() {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const chartRef = useRef<Chart | null>(null);
+function cleanHNTitle(title: string): string {
+  return title
+    .replace(/^Ask HN\s*:\s*/i, "")
+    .replace(/^Ask HN\s+/i, "")
+    .trim();
+}
+
+// ─── Trending HN Feed ─────────────────────────────────────────────────────────
+
+const FEED_COLORS = ["#7c3aed", "#06b6d4", "#10b981", "#f59e0b", "#ef4444"];
+
+function TrendingHNFeed() {
   const [posts, setPosts] = useState<HNPost[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -426,58 +435,6 @@ function TrendingHNChart() {
     return () => { cancelled = true; };
   }, []);
 
-  useEffect(() => {
-    if (!canvasRef.current || posts.length === 0) return;
-    chartRef.current?.destroy();
-    const colors = ["#7c3aed", "#06b6d4", "#10b981", "#f59e0b", "#ef4444"];
-    const labels = posts.map((p) =>
-      p.title.length > 42 ? p.title.slice(0, 40) + "…" : p.title
-    );
-    chartRef.current = new Chart(canvasRef.current, {
-      type: "bar",
-      data: {
-        labels,
-        datasets: [{
-          label: "Comments",
-          data: posts.map((p) => p.num_comments),
-          backgroundColor: colors.slice(0, posts.length),
-          borderRadius: 6,
-          borderSkipped: false,
-        }],
-      },
-      options: {
-        indexAxis: "y",
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            backgroundColor: "#0a0a0f",
-            titleColor: "#f0f0f8",
-            bodyColor: "#8888a8",
-            borderColor: "#2a2a35",
-            borderWidth: 1,
-            padding: 10,
-            callbacks: {
-              label: (ctx) => `${ctx.parsed.x} comments · ${posts[ctx.dataIndex]?.points ?? 0} points`,
-            },
-          },
-        },
-        scales: {
-          x: {
-            grid: { color: "rgba(255,255,255,0.04)" },
-            ticks: { color: "#55556a", font: { size: 11 } },
-          },
-          y: {
-            grid: { display: false },
-            ticks: { color: "#f0f0f8", font: { size: 12, weight: 600 } },
-          },
-        },
-      },
-    });
-    return () => { chartRef.current?.destroy(); };
-  }, [posts]);
-
   if (error) return null;
 
   return (
@@ -488,18 +445,43 @@ function TrendingHNChart() {
           <span className="pulse-text">LIVE</span>
         </div>
         <div>
-          <div className="trending-title">Hottest Ask HN threads right now</div>
-          <div className="trending-sub">Top 5 recent discussions by comment volume — where people are most actively complaining</div>
+          <div className="trending-title">Hottest discussions on Hacker News right now</div>
+          <div className="trending-sub">Most-commented Ask HN threads from the last 48 hours</div>
         </div>
       </div>
+
       {loading ? (
         <div className="trending-loader">
           <div className="trending-spinner" />
-          Fetching live HN data…
+          Fetching live HN discussions…
         </div>
       ) : (
-        <div className="trending-chart-wrap">
-          <canvas ref={canvasRef} />
+        <div className="hn-feed">
+          {posts.map((post, i) => (
+            <div key={post.objectID} className="hn-feed-item">
+              <div className="hn-feed-rank" style={{ color: FEED_COLORS[i] }}>
+                {i + 1}
+              </div>
+              <div className="hn-feed-body">
+                <div className="hn-feed-title">{cleanHNTitle(post.title)}</div>
+                <div className="hn-feed-meta">
+                  <span className="hn-feed-badge hn-comments">
+                    <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
+                      <path d="M2 2h8a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H4l-2 2V3a1 1 0 0 1 1-1z" stroke="currentColor" strokeWidth="1.3" fill="none"/>
+                    </svg>
+                    {post.num_comments} comments
+                  </span>
+                  <span className="hn-feed-badge hn-points">
+                    <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
+                      <path d="M6 1l1.5 3.5H11l-2.8 2 1 3.5L6 8.2 2.8 10l1-3.5L1 4.5h3.5z" stroke="currentColor" strokeWidth="1.2" fill="none"/>
+                    </svg>
+                    {post.points} pts
+                  </span>
+                </div>
+              </div>
+              <div className="hn-feed-bar" style={{ background: FEED_COLORS[i], width: `${Math.max(4, (post.num_comments / (posts[0]?.num_comments || 1)) * 48)}px` }} />
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -529,7 +511,7 @@ function OnboardingSection({
 
   return (
     <section className="onboarding animate-fade-in">
-      <TrendingHNChart />
+      <TrendingHNFeed />
       <div className="onboarding-card">
         <div className="section-label">
           <div className="section-label-dot" />
@@ -1299,6 +1281,32 @@ function LandingSection({ onStart }: { onStart: () => void }) {
           <div className="stat">
             <div className="stat-value">NLP</div>
             <div className="stat-label">Semantic grouping</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="how-it-works">
+        <div className="hiw-label">How it works</div>
+        <div className="hiw-steps">
+          <div className="hiw-step">
+            <div className="hiw-num">1</div>
+            <div className="hiw-icon">🎯</div>
+            <div className="hiw-step-title">Pick topics</div>
+            <div className="hiw-step-desc">Choose up to 5 categories you care about — SaaS, AI, dev tools, hiring, and more.</div>
+          </div>
+          <div className="hiw-arrow">→</div>
+          <div className="hiw-step">
+            <div className="hiw-num">2</div>
+            <div className="hiw-icon">🔍</div>
+            <div className="hiw-step-title">We scan HN</div>
+            <div className="hiw-step-desc">We fetch the most-discussed Ask HN threads and scan hundreds of comments for pain signals.</div>
+          </div>
+          <div className="hiw-arrow">→</div>
+          <div className="hiw-step">
+            <div className="hiw-num">3</div>
+            <div className="hiw-icon">📊</div>
+            <div className="hiw-step-title">See the pain points</div>
+            <div className="hiw-step-desc">NLP clusters the complaints into clear problem statements with evidence quotes and frequency counts.</div>
           </div>
         </div>
       </div>
