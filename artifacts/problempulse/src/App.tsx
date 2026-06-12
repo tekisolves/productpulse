@@ -616,6 +616,33 @@ function LoadingSection({ steps }: { steps: LoadingStep[] }) {
 
 // ─── Bar chart ────────────────────────────────────────────────────────────────
 
+// Split a phrase into at most 2 lines at a word boundary
+function wrapLabel(phrase: string, maxChars = 30): string[] {
+  if (phrase.length <= maxChars) return [phrase];
+  const words = phrase.split(" ");
+  let line1 = "";
+  const rest: string[] = [];
+  let filled = false;
+  for (const word of words) {
+    if (!filled && (line1 + (line1 ? " " : "") + word).length <= maxChars) {
+      line1 = line1 ? line1 + " " + word : word;
+    } else {
+      filled = true;
+      rest.push(word);
+    }
+  }
+  const line2 = rest.join(" ");
+  return line2 ? [line1, line2] : [line1];
+}
+
+const BAR_COLORS = [
+  { bg: "rgba(124,58,237,0.75)",  border: "rgba(167,139,250,0.9)" },
+  { bg: "rgba(6,182,212,0.75)",   border: "rgba(103,232,249,0.9)" },
+  { bg: "rgba(16,185,129,0.75)",  border: "rgba(52,211,153,0.9)"  },
+  { bg: "rgba(245,158,11,0.75)",  border: "rgba(251,191,36,0.9)"  },
+  { bg: "rgba(239,68,68,0.75)",   border: "rgba(252,165,165,0.9)" },
+];
+
 function BarChart({ data }: { data: PainPoint[] }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chartRef = useRef<Chart | null>(null);
@@ -624,11 +651,9 @@ function BarChart({ data }: { data: PainPoint[] }) {
     if (!canvasRef.current || data.length === 0) return;
     if (chartRef.current) chartRef.current.destroy();
 
-    const labels = data.map((d) =>
-      d.phrase.length > 28 ? d.phrase.slice(0, 26) + "…" : d.phrase
-    );
+    // Wrap labels into 2-line arrays so nothing is truncated
+    const labels = data.map((d) => wrapLabel(d.phrase));
     const counts = data.map((d) => d.count);
-    const maxCount = Math.max(...counts);
 
     chartRef.current = new Chart(canvasRef.current, {
       type: "bar",
@@ -637,44 +662,61 @@ function BarChart({ data }: { data: PainPoint[] }) {
         datasets: [{
           label: "Mentions",
           data: counts,
-          backgroundColor: counts.map((c) => `rgba(124, 58, 237, ${0.5 + (c / maxCount) * 0.5})`),
-          borderColor: counts.map((c) => `rgba(124, 58, 237, ${0.6 + (c / maxCount) * 0.4})`),
-          borderWidth: 1,
+          backgroundColor: BAR_COLORS.slice(0, data.length).map((c) => c.bg),
+          borderColor:      BAR_COLORS.slice(0, data.length).map((c) => c.border),
+          borderWidth: 1.5,
           borderRadius: 6,
           borderSkipped: false,
         }],
       },
       options: {
+        // Horizontal bars so labels read left-to-right
+        indexAxis: "y",
         responsive: true,
         maintainAspectRatio: false,
-        animation: { duration: 800, easing: "easeOutQuart" },
+        animation: { duration: 700, easing: "easeOutQuart" },
         plugins: {
           legend: { display: false },
           tooltip: {
-            backgroundColor: "#18181f",
-            borderColor: "#2a2a35",
+            backgroundColor: "#111118",
+            borderColor: "#3d3d4d",
             borderWidth: 1,
             titleColor: "#f0f0f8",
-            bodyColor: "#8888a8",
+            bodyColor: "#a8a8c8",
             padding: 12,
+            cornerRadius: 8,
             callbacks: {
+              // Always show the full phrase in the tooltip title
               title: (items) => data[items[0].dataIndex].phrase,
-              label: (item) => ` ${item.raw} mention${Number(item.raw) !== 1 ? "s" : ""} across comments`,
+              label: (item) => `  ${item.parsed.x} mention${Number(item.parsed.x) !== 1 ? "s" : ""} across comments`,
             },
           },
         },
         scales: {
+          // X-axis = the numeric count axis (bottom)
           x: {
+            grid: { color: "rgba(255,255,255,0.05)", tickLength: 0 },
+            border: { display: false },
+            ticks: {
+              color: "#8080a4",
+              font: { size: 11, family: "Inter" },
+              stepSize: 1,
+              maxTicksLimit: 6,
+            },
+          },
+          // Y-axis = the phrase label axis (left)
+          y: {
             grid: { display: false },
             border: { display: false },
-            ticks: { color: "#8888a8", font: { size: 11, family: "Inter" }, maxRotation: 20 },
-          },
-          y: {
-            grid: { color: "#1e1e28" },
-            border: { display: false },
-            ticks: { color: "#8888a8", font: { size: 11, family: "Inter" }, stepSize: 1 },
+            ticks: {
+              color: "#d8d8f0",
+              font: { size: 12, family: "Inter", weight: 600 },
+              crossAlign: "far",
+              padding: 8,
+            },
           },
         },
+        layout: { padding: { right: 16 } },
       },
     });
 
