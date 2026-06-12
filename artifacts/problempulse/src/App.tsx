@@ -98,6 +98,19 @@ interface ThreadAnalysis {
   totalComments: number;
 }
 
+interface SuggestionTier {
+  format: string;
+  title: string;
+  description: string;
+}
+
+interface ProductSuggestion {
+  phrase: string;
+  low: SuggestionTier;
+  mid: SuggestionTier;
+  full: SuggestionTier;
+}
+
 // ─── HN Topic categories ──────────────────────────────────────────────────────
 
 const HN_TOPICS: HNTopic[] = [
@@ -746,6 +759,8 @@ function ProblemDetailPanel({
   const [analysis, setAnalysis] = useState<ThreadAnalysis | null>(null);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState(false);
+  const [prodSuggestions, setProdSuggestions] = useState<ProductSuggestion[]>([]);
+  const [prodSugLoading, setProdSugLoading] = useState(false);
   const urgency = urgencyConfig(problem.urgencyScore);
 
   useEffect(() => {
@@ -758,6 +773,28 @@ function ProblemDetailPanel({
       .catch(() => { if (!cancelled) { setFetchError(true); setLoading(false); } });
     return () => { cancelled = true; };
   }, [problem.id]);
+
+  useEffect(() => {
+    if (!analysis || analysis.painPhrases.length === 0) return;
+    setProdSugLoading(true);
+    fetch("/api/suggest-products", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        painPoints: analysis.painPhrases.slice(0, 3).map((p) => ({
+          phrase: p.phrase,
+          count: p.count,
+          noSolution: false,
+        })),
+        topics: [problem.category],
+        totalComments: analysis.totalComments,
+      }),
+    })
+      .then((r) => r.json())
+      .then((data: { suggestions: ProductSuggestion[] }) => setProdSuggestions(data.suggestions ?? []))
+      .catch(() => {})
+      .finally(() => setProdSugLoading(false));
+  }, [analysis]);
 
   const opp = analysis ? opportunityInfo(analysis.solutionGapPct) : null;
   const maxCount = analysis?.painPhrases[0]?.count ?? 1;
@@ -883,6 +920,47 @@ function ProblemDetailPanel({
                   </div>
                 ))}
               </div>
+            </div>
+          )}
+
+          {/* ── Product ideas ── */}
+          {(prodSugLoading || prodSuggestions.length > 0) && (
+            <div className="detail-section">
+              <div className="detail-section-title">🏗️ Product ideas from this pain</div>
+              {prodSugLoading ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 10, color: "var(--text-secondary)", fontSize: 13, padding: "8px 0" }}>
+                  <div className="trending-spinner" style={{ width: 14, height: 14, borderWidth: 1.5 }} />
+                  Generating opportunities…
+                </div>
+              ) : (
+                <div className="detail-mini-suggestions">
+                  {prodSuggestions.map((sug, i) => (
+                    <div key={i} className="detail-mini-sug-item">
+                      {prodSuggestions.length > 1 && (
+                        <div className="detail-mini-sug-phrase">Re: "{sug.phrase}"</div>
+                      )}
+                      <div className="detail-mini-tiers">
+                        {BUILD_TIERS.map(({ key, emoji, cls }) => {
+                          const tier = sug[key];
+                          return (
+                            <div key={key} className={`detail-mini-tier ${cls.replace("build-tier-", "detail-mini-tier-")}`}>
+                              <div className="detail-mini-tier-top">
+                                <span style={{ fontSize: 15 }}>{emoji}</span>
+                                <div className="detail-mini-tier-label">
+                                  {key === "low" ? "Low · 1–3 days" : key === "mid" ? "Mid · 2–6 wks" : "SaaS · months"}
+                                </div>
+                              </div>
+                              <div className="detail-mini-tier-format">{tier.format}</div>
+                              <div className="detail-mini-tier-title">{tier.title}</div>
+                              <div className="detail-mini-tier-desc">{tier.description}</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -1058,6 +1136,124 @@ function LoadingSection({ steps }: { steps: LoadingStep[] }) {
         ))}
       </div>
     </section>
+  );
+}
+
+// ─── Build Opportunities Panel ────────────────────────────────────────────────
+
+const BUILD_TIERS: Array<{
+  key: "low" | "mid" | "full";
+  emoji: string;
+  label: string;
+  effort: string;
+  cls: string;
+}> = [
+  { key: "low",  emoji: "🍎", label: "Low hanging fruit", effort: "1–3 days",    cls: "build-tier-low"  },
+  { key: "mid",  emoji: "🔧", label: "Mid-tier tool",     effort: "2–6 weeks",  cls: "build-tier-mid"  },
+  { key: "full", emoji: "🚀", label: "Full SaaS",         effort: "2–6 months", cls: "build-tier-full" },
+];
+
+function BuildOpportunitiesPanel({
+  painPoints,
+  topics,
+  totalComments,
+}: {
+  painPoints: PainPoint[];
+  topics: HNTopic[];
+  totalComments: number;
+}) {
+  const [suggestions, setSuggestions] = useState<ProductSuggestion[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [errored, setErrored] = useState(false);
+
+  const RANK_COLORS = ["#7c3aed", "#06b6d4", "#10b981", "#f59e0b", "#ef4444"];
+
+  useEffect(() => {
+    if (painPoints.length === 0) { setLoading(false); return; }
+    fetch("/api/suggest-products", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        painPoints: painPoints.slice(0, 5).map((p) => ({
+          phrase: p.phrase,
+          count: p.count,
+          noSolution: p.noSolution,
+        })),
+        topics: topics.map((t) => t.label),
+        totalComments,
+      }),
+    })
+      .then((r) => r.json())
+      .then((data: { suggestions: ProductSuggestion[] }) => setSuggestions(data.suggestions ?? []))
+      .catch(() => setErrored(true))
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (!loading && (errored || suggestions.length === 0)) return null;
+
+  return (
+    <div className="build-panel">
+      <div className="build-panel-header">
+        <div>
+          <div className="build-panel-title">🏗️ What you could build</div>
+          <div className="build-panel-sub">
+            Product opportunities grounded in {totalComments.toLocaleString()} real HN comments —
+            suggestions are specific to the pain signals above, not generic guesses
+          </div>
+        </div>
+        <div className="build-data-badge">
+          <span className="pulse-dot" style={{ background: "#10b981", animationDuration: "2.5s" }} />
+          Backed by live data
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="build-loading">
+          <div className="trending-spinner" />
+          Generating product opportunities…
+        </div>
+      ) : (
+        <div className="build-list">
+          {suggestions.map((sug, i) => (
+            <div key={i} className="build-item">
+              <div className="build-pain-label">
+                <span
+                  className="build-pain-rank"
+                  style={{
+                    color: RANK_COLORS[i],
+                    borderColor: `${RANK_COLORS[i]}44`,
+                    background: `${RANK_COLORS[i]}12`,
+                  }}
+                >
+                  #{i + 1}
+                </span>
+                <span className="build-pain-phrase">{sug.phrase}</span>
+                <span className="build-pain-count">{painPoints[i]?.count ?? 0} mentions</span>
+              </div>
+              <div className="build-tiers">
+                {BUILD_TIERS.map(({ key, emoji, label, effort, cls }) => {
+                  const tier = sug[key];
+                  return (
+                    <div key={key} className={`build-tier ${cls}`}>
+                      <div className="build-tier-header">
+                        <span className="build-tier-emoji">{emoji}</span>
+                        <div>
+                          <div className="build-tier-label">{label}</div>
+                          <div className="build-tier-effort">{effort}</div>
+                        </div>
+                      </div>
+                      <div className="build-tier-format">{tier.format}</div>
+                      <div className="build-tier-title">{tier.title}</div>
+                      <div className="build-tier-desc">{tier.description}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1558,6 +1754,12 @@ function ResultsSection({
             </div>
           ))}
         </div>
+
+        <BuildOpportunitiesPanel
+          painPoints={painPoints}
+          topics={topics}
+          totalComments={totalComments}
+        />
 
         <div className="results-actions">
           <button className="btn-ghost" onClick={onRestart}>
