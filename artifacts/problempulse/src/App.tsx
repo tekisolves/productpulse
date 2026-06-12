@@ -76,6 +76,28 @@ interface LoadingStep {
   status: "pending" | "active" | "done";
 }
 
+interface UrgentProblem {
+  id: string;
+  title: string;
+  cleanTitle: string;
+  category: string;
+  categoryIcon: string;
+  categoryColor: string;
+  urgencyScore: number;
+  commentCount: number;
+  points: number;
+  ageHours: number;
+  hnUrl: string;
+}
+
+interface ThreadAnalysis {
+  painPhrases: Array<{ phrase: string; count: number; evidence: string[] }>;
+  wishStatements: string[];
+  solutionGapPct: number;
+  totalPainComments: number;
+  totalComments: number;
+}
+
 // ─── HN Topic categories ──────────────────────────────────────────────────────
 
 const HN_TOPICS: HNTopic[] = [
@@ -413,6 +435,137 @@ function cleanHNTitle(title: string): string {
     .trim();
 }
 
+// ─── Category detection + urgency scoring ────────────────────────────────────
+
+const CATEGORY_MAP = [
+  { label: "AI & ML",          icon: "🤖", color: "#a78bfa", bgColor: "rgba(124,58,237,0.14)", pattern: /\b(AI|LLM|GPT|ML|model|claude|openai|chatgpt|gemini|llama|machine.?learning|neural|prompt|embedding|fine.?tun)\b/i },
+  { label: "Dev Tools",        icon: "🛠️", color: "#67e8f9", bgColor: "rgba(6,182,212,0.14)",  pattern: /\b(developer|programming|code|coding|debug|git|deploy|API|SDK|framework|library|CLI|terminal|devops|IDE|toolchain|build.?tool)\b/i },
+  { label: "SaaS & B2B",       icon: "📦", color: "#6ee7b7", bgColor: "rgba(16,185,129,0.14)", pattern: /\b(SaaS|B2B|subscription|software.?product|startup|enterprise|pricing|customer.?success)\b/i },
+  { label: "Data & Analytics", icon: "📊", color: "#fcd34d", bgColor: "rgba(245,158,11,0.14)", pattern: /\b(data|analytics|database|pipeline|ETL|dashboard|metrics|SQL|warehouse|spreadsheet|CSV)\b/i },
+  { label: "Productivity",     icon: "⚡", color: "#c4b5fd", bgColor: "rgba(139,92,246,0.14)", pattern: /\b(productivity|workflow|automation|task|manage|organis|focus|note|document|meeting|calendar)\b/i },
+  { label: "Security",         icon: "🔒", color: "#fca5a5", bgColor: "rgba(239,68,68,0.14)",  pattern: /\b(security|privacy|auth|encrypt|compliance|vulnerability|password|2FA|GDPR|breach|hack)\b/i },
+  { label: "Hiring & HR",      icon: "💼", color: "#f9a8d4", bgColor: "rgba(236,72,153,0.14)", pattern: /\b(hiring|job|career|interview|salary|recruit|remote|resume|HR|onboard|employee)\b/i },
+  { label: "Finance",          icon: "💳", color: "#5eead4", bgColor: "rgba(20,184,166,0.14)", pattern: /\b(finance|payment|billing|accounting|tax|money|bank|invoice|expense|payroll|fintech)\b/i },
+] as const;
+
+function detectCategory(title: string): typeof CATEGORY_MAP[number] | { label: string; icon: string; color: string; bgColor: string } {
+  for (const cat of CATEGORY_MAP) {
+    if (cat.pattern.test(title)) return cat;
+  }
+  return { label: "General", icon: "💡", color: "#8080a4", bgColor: "rgba(128,128,164,0.12)" };
+}
+
+function computeUrgency(commentCount: number, points: number, ageHours: number, painHits: number): number {
+  const engagement = Math.log10(commentCount + 1) * 3.5 + Math.log10(points + 1) * 0.5;
+  const decayDays = ageHours / 24;
+  const recency = decayDays < 1 ? 1 : Math.max(0, 1 - (decayDays - 1) / 6);
+  const pain = 1 + Math.min(painHits, 3) * 0.4;
+  return Math.min(10, parseFloat((engagement * pain * (0.25 + recency * 0.75)).toFixed(1)));
+}
+
+function urgencyConfig(score: number): { label: string; color: string; bg: string } {
+  if (score >= 7.5) return { label: "Critical", color: "#ef4444", bg: "rgba(239,68,68,0.12)" };
+  if (score >= 5)   return { label: "High",     color: "#f59e0b", bg: "rgba(245,158,11,0.12)" };
+  if (score >= 3)   return { label: "Medium",   color: "#a78bfa", bg: "rgba(124,58,237,0.12)" };
+  return                   { label: "Low",      color: "#8080a4", bg: "rgba(128,128,164,0.12)" };
+}
+
+async function fetchUrgentProblems(): Promise<UrgentProblem[]> {
+  const [res1, res2] = await Promise.all([
+    fetch(`${HN_API}/search_by_date?tags=ask_hn&hitsPerPage=80&numericFilters=num_comments%3E3`, { headers: { Accept: "application/json" } }),
+    fetch(`${HN_API}/search_by_date?tags=ask_hn&hitsPerPage=80&numericFilters=num_comments%3E3&page=1`, { headers: { Accept: "application/json" } }),
+  ]);
+  const [d1, d2] = await Promise.all([res1.json(), res2.json()]);
+  const allHits: Record<string, unknown>[] = [...(d1.hits ?? []), ...(d2.hits ?? [])];
+  const now = Date.now();
+  const seen = new Set<string>();
+  const problems: UrgentProblem[] = [];
+  for (const hit of allHits) {
+    const id = String(hit.objectID ?? "");
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const title = String(hit.title ?? "");
+    const titleLower = title.toLowerCase();
+    const painHits =
+      PAIN_KEYWORDS.filter((k) => titleLower.includes(k)).length +
+      PAIN_SEEDS.filter((s) => titleLower.includes(s.replace(/'/g, ""))).length;
+    if (painHits === 0) continue;
+    const createdAt = String(hit.created_at ?? "");
+    const ageMs = createdAt ? now - new Date(createdAt).getTime() : 0;
+    const ageHours = Math.max(0, ageMs / 3600000);
+    const commentCount = Number(hit.num_comments ?? 0);
+    const points = Number(hit.points ?? 0);
+    const score = computeUrgency(commentCount, points, ageHours, painHits);
+    const cat = detectCategory(title);
+    problems.push({
+      id, title,
+      cleanTitle: cleanHNTitle(title),
+      category: cat.label,
+      categoryIcon: cat.icon,
+      categoryColor: cat.color,
+      urgencyScore: score,
+      commentCount, points, ageHours,
+      hnUrl: `https://news.ycombinator.com/item?id=${id}`,
+    });
+  }
+  return problems.sort((a, b) => b.urgencyScore - a.urgencyScore).slice(0, 18);
+}
+
+function extractWishStatements(cleanComments: string[]): string[] {
+  const WISH_MARKERS = [
+    "i wish", "wish there was", "wish there were", "would love a tool",
+    "someone should build", "there should be", "why isn't there",
+    "why is there no", "we need a tool", "would be amazing if",
+    "it would be great if", "i'd pay for", "i would pay for",
+  ];
+  const results: string[] = [];
+  for (const comment of cleanComments) {
+    if (results.length >= 4) break;
+    const lower = comment.toLowerCase();
+    for (const marker of WISH_MARKERS) {
+      if (!lower.includes(marker)) continue;
+      const sentences = comment.replace(/\n+/g, " ").split(/(?<=[.!?])\s+/);
+      for (const s of sentences) {
+        if (!s.toLowerCase().includes(marker)) continue;
+        if (s.length < 25 || s.length > 240) continue;
+        const clean = s.trim().replace(/^[^a-zA-Z"']+/, "");
+        if (clean && !results.some((r) => r.slice(0, 30) === clean.slice(0, 30))) {
+          results.push(clean.charAt(0).toUpperCase() + clean.slice(1));
+        }
+      }
+      break;
+    }
+  }
+  return results;
+}
+
+async function analyzeThread(problem: UrgentProblem): Promise<ThreadAnalysis> {
+  const comments = await fetchHNComments(problem.id);
+  const total = comments.length;
+  const cleaned = comments
+    .map((c) => (c.comment_text ? stripHtml(c.comment_text) : null))
+    .filter((c): c is string => c !== null && c.length > 25);
+  const painComments = cleaned.filter(hasPainKeyword);
+  const evidenceMap = new Map<string, string[]>();
+  painComments.forEach((c) => evidenceMap.set(c, [c]));
+  const phraseMap = extractPainPhrases(painComments, evidenceMap);
+  const phrases = mergeSemanticGroups(phraseMap)
+    .slice(0, 5)
+    .map((p) => ({ phrase: p.phrase, count: p.count, evidence: p.evidence.slice(0, 2) }));
+  const withSolution = painComments.filter(hasSolutionMention).length;
+  const solutionGapPct =
+    painComments.length > 0 ? Math.round((1 - withSolution / painComments.length) * 100) : 50;
+  return {
+    painPhrases: phrases,
+    wishStatements: extractWishStatements(cleaned),
+    solutionGapPct,
+    totalPainComments: painComments.length,
+    totalComments: total,
+  };
+}
+
+const DETAIL_COLORS = ["#a78bfa", "#67e8f9", "#6ee7b7", "#fcd34d", "#fca5a5"];
+
 // ─── Trending HN Feed ─────────────────────────────────────────────────────────
 
 const FEED_COLORS = ["#7c3aed", "#06b6d4", "#10b981", "#f59e0b", "#ef4444"];
@@ -488,104 +641,398 @@ function TrendingHNFeed() {
   );
 }
 
-// ─── Onboarding Section ───────────────────────────────────────────────────────
+// ─── Problem Card ────────────────────────────────────────────────────────────
 
-function OnboardingSection({
-  onAnalyse,
+function ProblemCard({
+  problem,
+  isSelected,
+  onSelect,
+  onDetail,
 }: {
-  onAnalyse: (topics: HNTopic[], sortBy: "recent" | "popular") => void;
+  problem: UrgentProblem;
+  isSelected: boolean;
+  onSelect: (p: UrgentProblem) => void;
+  onDetail: (p: UrgentProblem) => void;
 }) {
-  const [selected, setSelected] = useState<HNTopic[]>([]);
-  const [sortBy, setSortBy] = useState<"recent" | "popular">("recent");
-  const MAX = 5;
-
-  const toggle = (topic: HNTopic) => {
-    setSelected((prev) => {
-      if (prev.some((t) => t.id === topic.id)) return prev.filter((t) => t.id !== topic.id);
-      if (prev.length >= MAX) return prev;
-      return [...prev, topic];
-    });
-  };
-
-  const isSelected = (topic: HNTopic) => selected.some((t) => t.id === topic.id);
+  const urgency = urgencyConfig(problem.urgencyScore);
+  const ageLabel =
+    problem.ageHours < 1 ? "<1h ago"
+    : problem.ageHours < 24 ? `${Math.floor(problem.ageHours)}h ago`
+    : `${Math.floor(problem.ageHours / 24)}d ago`;
 
   return (
-    <section className="onboarding animate-fade-in">
-      <TrendingHNFeed />
-      <div className="onboarding-card">
-        <div className="section-label">
-          <div className="section-label-dot" />
-          Step 1 of 2 — Choose Topics
-        </div>
-        <h2>Which topics do you want to scan?</h2>
-        <p className="onboarding-desc">
-          Pick up to {MAX} categories. We'll scan recent Ask HN threads and surface
-          the most common pain points from the comments.
-        </p>
+    <div
+      className={`prob-card ${isSelected ? "selected" : ""}`}
+      onClick={() => onDetail(problem)}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => e.key === "Enter" && onDetail(problem)}
+    >
+      <div className="prob-card-head">
+        <span
+          className="prob-cat-badge"
+          style={{ color: problem.categoryColor, background: `${problem.categoryColor}18`, borderColor: `${problem.categoryColor}38` }}
+        >
+          {problem.categoryIcon} {problem.category}
+        </span>
+        <span
+          className="prob-urgency-badge"
+          style={{ color: urgency.color, background: urgency.bg }}
+        >
+          {problem.urgencyScore.toFixed(1)} · {urgency.label}
+        </span>
+      </div>
 
-        <div className="sort-toggle-row">
-          <span className="sort-label">Sort posts by:</span>
-          <div className="sort-toggle">
-            <button
-              className={`sort-btn ${sortBy === "recent" ? "active" : ""}`}
-              onClick={() => setSortBy("recent")}
+      <div className="prob-title">{problem.cleanTitle}</div>
+
+      <div className="prob-stats">
+        <span className="prob-stat">💬 {problem.commentCount}</span>
+        <span className="prob-stat-sep">·</span>
+        <span className="prob-stat">▲ {problem.points}</span>
+        <span className="prob-stat-sep">·</span>
+        <span className="prob-stat">🕐 {ageLabel}</span>
+      </div>
+
+      <div className="prob-card-footer">
+        <button
+          className="prob-detail-btn"
+          onClick={(e) => { e.stopPropagation(); onDetail(problem); }}
+        >
+          Open research brief →
+        </button>
+        <button
+          className={`prob-select-btn ${isSelected ? "selected" : ""}`}
+          onClick={(e) => { e.stopPropagation(); onSelect(problem); }}
+          aria-label={isSelected ? "Deselect" : "Select for analysis"}
+        >
+          {isSelected ? "✓ Selected" : "+ Select"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Opportunity label helper ─────────────────────────────────────────────────
+
+function opportunityInfo(gapPct: number): { label: string; sub: string; color: string; icon: string } {
+  if (gapPct >= 70) return {
+    label: "High opportunity",
+    sub: "Most discussions mention no solution — this pain is largely unaddressed in the market.",
+    color: "#10b981", icon: "🔓",
+  };
+  if (gapPct >= 40) return {
+    label: "Moderate opportunity",
+    sub: "Some solutions are mentioned but pain persists — room for a significantly better product.",
+    color: "#f59e0b", icon: "⚠️",
+  };
+  return {
+    label: "Saturated space",
+    sub: "Multiple solutions actively mentioned — high competition or tight niche positioning needed.",
+    color: "#8080a4", icon: "✓",
+  };
+}
+
+// ─── Problem Detail Panel (research brief) ───────────────────────────────────
+
+function ProblemDetailPanel({
+  problem,
+  onClose,
+  onAnalyze,
+}: {
+  problem: UrgentProblem;
+  onClose: () => void;
+  onAnalyze: (p: UrgentProblem) => void;
+}) {
+  const [analysis, setAnalysis] = useState<ThreadAnalysis | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState(false);
+  const urgency = urgencyConfig(problem.urgencyScore);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setFetchError(false);
+    setAnalysis(null);
+    analyzeThread(problem)
+      .then((result) => { if (!cancelled) { setAnalysis(result); setLoading(false); } })
+      .catch(() => { if (!cancelled) { setFetchError(true); setLoading(false); } });
+    return () => { cancelled = true; };
+  }, [problem.id]);
+
+  const opp = analysis ? opportunityInfo(analysis.solutionGapPct) : null;
+  const maxCount = analysis?.painPhrases[0]?.count ?? 1;
+  const allEvidence = analysis?.painPhrases.flatMap((p) => p.evidence) ?? [];
+
+  return (
+    <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="detail-panel animate-fade-in-scale" role="dialog" aria-modal="true">
+
+        {/* ── Header ── */}
+        <div className="detail-header">
+          <div className="detail-header-left">
+            <span
+              className="prob-cat-badge"
+              style={{ color: problem.categoryColor, background: `${problem.categoryColor}18`, borderColor: `${problem.categoryColor}38` }}
             >
-              📅 Recent
-            </button>
-            <button
-              className={`sort-btn ${sortBy === "popular" ? "active" : ""}`}
-              onClick={() => setSortBy("popular")}
-            >
-              🔥 Popular
-            </button>
+              {problem.categoryIcon} {problem.category}
+            </span>
+            <span className="detail-urgency" style={{ color: urgency.color }}>
+              {urgency.label} urgency · {problem.urgencyScore.toFixed(1)}/10
+            </span>
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <a href={problem.hnUrl} target="_blank" rel="noopener noreferrer" className="detail-hn-link">
+              HN thread ↗
+            </a>
+            <button className="modal-close" style={{ position: "static" }} onClick={onClose}>✕</button>
           </div>
         </div>
 
-        <div className="topic-grid">
-          {HN_TOPICS.map((topic) => (
-            <button
-              key={topic.id}
-              className={`topic-chip ${isSelected(topic) ? "selected" : ""} ${selected.length >= MAX && !isSelected(topic) ? "disabled" : ""}`}
-              onClick={() => toggle(topic)}
-              disabled={selected.length >= MAX && !isSelected(topic)}
-            >
-              <span className="topic-icon">{topic.icon}</span>
-              <span className="topic-label">{topic.label}</span>
-              {isSelected(topic) && <span className="topic-check">✓</span>}
-            </button>
-          ))}
+        {/* ── Problem title ── */}
+        <h2 className="detail-title">{problem.cleanTitle}</h2>
+
+        {/* ── Stat cards ── */}
+        <div className="detail-stats">
+          <div className="detail-stat-card">
+            <div className="detail-stat-value">{problem.commentCount}</div>
+            <div className="detail-stat-label">Discussions</div>
+          </div>
+          <div className="detail-stat-card">
+            <div className="detail-stat-value" style={{ color: urgency.color }}>
+              {problem.urgencyScore.toFixed(1)}
+              <span style={{ fontSize: 13, opacity: 0.5, fontWeight: 600 }}>/10</span>
+            </div>
+            <div className="detail-stat-label">Urgency score</div>
+          </div>
+          <div className="detail-stat-card">
+            {loading
+              ? <div className="detail-stat-value" style={{ color: "var(--text-muted)" }}>—</div>
+              : <div className="detail-stat-value" style={{ color: opp?.color }}>{analysis?.solutionGapPct ?? 0}%</div>
+            }
+            <div className="detail-stat-label">Unsolved rate</div>
+          </div>
         </div>
 
-        {selected.length > 0 && (
-          <div className="selected-topics">
-            <div className="selected-label">Selected ({selected.length}/{MAX}):</div>
-            <div className="selected-chips">
-              {selected.map((t) => (
-                <span key={t.id} className="selected-chip">
-                  {t.icon} {t.label}
-                  <button className="chip-remove" onClick={() => toggle(t)} aria-label={`Remove ${t.label}`}>×</button>
-                </span>
-              ))}
+        {/* ── Opportunity banner ── */}
+        {!loading && opp && (
+          <div
+            className="detail-opportunity"
+            style={{ borderColor: `${opp.color}40`, background: `${opp.color}0e` }}
+          >
+            <span style={{ fontSize: 22, lineHeight: 1, flexShrink: 0 }}>{opp.icon}</span>
+            <div>
+              <div className="detail-opp-label" style={{ color: opp.color }}>{opp.label}</div>
+              <div className="detail-opp-sub">{opp.sub}</div>
             </div>
           </div>
         )}
 
-        <button
-          className="btn-primary"
-          style={{ width: "100%", marginTop: 24, justifyContent: "center" }}
-          onClick={() => onAnalyse(selected, sortBy)}
-          disabled={selected.length === 0}
-        >
-          Scan for pain points
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-            <path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
-        </button>
+        <div className="detail-body">
 
-        <div style={{ textAlign: "center", marginTop: 12, fontSize: 12, color: "var(--text-muted)" }}>
-          Powered by the Hacker News Algolia API · no login required
+          {/* ── Pain signals ── */}
+          <div className="detail-section">
+            <div className="detail-section-title">Top pain signals from this thread</div>
+            {loading ? (
+              <div className="detail-loading">
+                <div className="trending-spinner" style={{ width: 14, height: 14, borderWidth: 1.5 }} />
+                Scanning {problem.commentCount} comments with NLP…
+              </div>
+            ) : fetchError ? (
+              <div className="detail-loading" style={{ color: "#fca5a5" }}>Could not fetch comments — check your connection.</div>
+            ) : analysis!.painPhrases.length === 0 ? (
+              <div className="detail-loading">No clear pain signals extracted from this thread.</div>
+            ) : (
+              <div className="detail-phrases">
+                {analysis!.painPhrases.map((p, i) => (
+                  <div key={i} className="detail-phrase-row">
+                    <div className="detail-phrase-label">{i + 1}</div>
+                    <div className="detail-phrase-text">{p.phrase}</div>
+                    <div className="detail-phrase-bar-wrap">
+                      <div
+                        className="detail-phrase-bar"
+                        style={{ width: `${(p.count / maxCount) * 100}%`, background: DETAIL_COLORS[i] }}
+                      />
+                    </div>
+                    <div className="detail-phrase-count">{p.count}×</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* ── Wish statements ── */}
+          {!loading && !fetchError && (analysis?.wishStatements.length ?? 0) > 0 && (
+            <div className="detail-section">
+              <div className="detail-section-title">💡 What people wish existed</div>
+              <div className="detail-wishes">
+                {analysis!.wishStatements.map((w, i) => (
+                  <div key={i} className="detail-wish">"{w}"</div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ── Evidence quotes ── */}
+          {!loading && !fetchError && allEvidence.length > 0 && (
+            <div className="detail-section">
+              <div className="detail-section-title">💬 Real comments from the thread</div>
+              <div className="detail-evidence-list">
+                {allEvidence.slice(0, 3).map((ev, i) => (
+                  <div key={i} className="detail-evidence-quote">
+                    "{ev.length > 220 ? ev.slice(0, 220) + "…" : ev}"
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+        </div>
+
+        {/* ── Actions ── */}
+        <div className="detail-actions">
+          <button className="btn-ghost" style={{ fontSize: 13 }} onClick={onClose}>← Back</button>
+          <button
+            className="btn-primary"
+            style={{ fontSize: 14, padding: "10px 20px" }}
+            onClick={() => { onClose(); onAnalyze(problem); }}
+          >
+            Run deep analysis
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path d="M2 7h10M8 3l4 4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── Problem Discovery Section ────────────────────────────────────────────────
+
+function ProblemDiscoverySection({
+  onAnalyse,
+}: {
+  onAnalyse: (topics: HNTopic[], sortBy: "recent" | "popular") => void;
+}) {
+  const [problems, setProblems] = useState<UrgentProblem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [selected, setSelected] = useState<UrgentProblem[]>([]);
+  const [detailProblem, setDetailProblem] = useState<UrgentProblem | null>(null);
+  const [filterCat, setFilterCat] = useState("All");
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchUrgentProblems()
+      .then((probs) => { if (!cancelled) { setProblems(probs); setLoading(false); } })
+      .catch(() => { if (!cancelled) { setLoadError(true); setLoading(false); } });
+    return () => { cancelled = true; };
+  }, []);
+
+  const categories = ["All", ...Array.from(new Set(problems.map((p) => p.category)))];
+  const filtered = filterCat === "All" ? problems : problems.filter((p) => p.category === filterCat);
+
+  const toggleSelect = (prob: UrgentProblem) =>
+    setSelected((prev) =>
+      prev.some((p) => p.id === prob.id)
+        ? prev.filter((p) => p.id !== prob.id)
+        : prev.length < 5 ? [...prev, prob] : prev
+    );
+
+  const toTopic = (p: UrgentProblem): HNTopic => ({
+    id: p.id,
+    label: p.cleanTitle.length > 28 ? p.cleanTitle.slice(0, 27) + "…" : p.cleanTitle,
+    query: p.cleanTitle.split(" ").slice(0, 6).join(" "),
+    icon: p.categoryIcon,
+  });
+
+  return (
+    <section className="discovery animate-fade-in" style={{ paddingBottom: selected.length > 0 ? 96 : 40 }}>
+
+      <div className="discovery-header">
+        <div className="discovery-badge">
+          <span className="pulse-dot" style={{ background: "#ef4444" }} />
+          Live from Hacker News
+        </div>
+        <h2>Real problems people are struggling with right now</h2>
+        <p className="discovery-sub">
+          Each card is a live Hacker News discussion, scored by urgency and analysed for market opportunity.
+          Click any card to open its research brief, then select problems to run a deep analysis.
+        </p>
+      </div>
+
+      {!loading && !loadError && (
+        <div className="discovery-filters">
+          {categories.map((cat) => (
+            <button
+              key={cat}
+              className={`discovery-filter-btn ${filterCat === cat ? "active" : ""}`}
+              onClick={() => setFilterCat(cat)}
+            >
+              {cat}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {loading ? (
+        <div className="discovery-loading">
+          <div className="trending-spinner" />
+          Scanning Hacker News for urgent problems…
+        </div>
+      ) : loadError ? (
+        <div className="discovery-loading">
+          Could not load problems — check your connection and refresh.
+        </div>
+      ) : (
+        <div className="discovery-grid">
+          {filtered.map((prob) => (
+            <ProblemCard
+              key={prob.id}
+              problem={prob}
+              isSelected={selected.some((p) => p.id === prob.id)}
+              onSelect={toggleSelect}
+              onDetail={setDetailProblem}
+            />
+          ))}
+        </div>
+      )}
+
+      <div className="discovery-footer">
+        Powered by the Hacker News Algolia API · Refreshes on each visit · No login required
+      </div>
+
+      {selected.length > 0 && (
+        <div className="discovery-selected-bar">
+          <div className="dsb-info">
+            <div className="dsb-count">{selected.length} problem{selected.length !== 1 ? "s" : ""} selected</div>
+            <div className="dsb-names">
+              {selected.map((p) => `${p.categoryIcon} ${p.cleanTitle.slice(0, 20)}…`).join("  ")}
+            </div>
+          </div>
+          <button
+            className="btn-primary"
+            style={{ fontSize: 14, padding: "10px 22px", flexShrink: 0 }}
+            onClick={() => onAnalyse(selected.map(toTopic), "recent")}
+          >
+            Run deep analysis
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path d="M2 7h10M8 3l4 4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </button>
+        </div>
+      )}
+
+      {detailProblem && (
+        <ProblemDetailPanel
+          problem={detailProblem}
+          onClose={() => setDetailProblem(null)}
+          onAnalyze={(prob) => {
+            setDetailProblem(null);
+            onAnalyse([toTopic(prob)], "recent");
+          }}
+        />
+      )}
     </section>
   );
 }
@@ -1506,7 +1953,7 @@ export default function App() {
   return (
     <div className="app">
       {phase === "landing" && <LandingSection onStart={() => setPhase("onboarding")} />}
-      {phase === "onboarding" && <OnboardingSection onAnalyse={runAnalysis} />}
+      {phase === "onboarding" && <ProblemDiscoverySection onAnalyse={runAnalysis} />}
       {phase === "loading" && <LoadingSection steps={loadingSteps} />}
       {phase === "results" && (
         <ResultsSection
